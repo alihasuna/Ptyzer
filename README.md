@@ -9,4 +9,4 @@ The embedded metadata typically includes the microscope lens, coil, and stage co
 The functions also provide features for performing basic checks, preprocessing and analysis of data that are useful to perform prior to forming a ptychographic reconstruction. The results of the analysis are embedded into the output `.h5` file.
 
 Utility functions to link into other ptychographic solvers, such as modified versions of
-PtychoShelves, such as provided at [PtychoRunner](https://github.com/ArthurBlackburn/PtychoRunner), or into advanced distortion correction routines, such as[emicroml](https://github.com/mrfitzpa/emicroml), will be provided in due course.
+PtychoShelves, such as provided at [PtychoRunner](https://github.com/ArthurBlackburn/PtychoRunner), or into advanced distortion correction routines, such as [emicroml](https://github.com/mrfitzpa/emicroml), will be provided in due course.
