@@ -855,6 +855,73 @@ def get_diffraction_calibration(beam_kV = 200, recon_pix_size = 25e-12, dpsize =
     return Q_pixel_size, Q_pixel_units, angular_FOV
 # %%
 
+def _safe_get_nested(d, *keys):
+    """
+    Walk a chain of dict keys/list-indices, returning None instead of raising if
+    any key/index along the way is missing or the container isn't subscriptable.
+
+    d : the dict (or list/array) to start from.
+    *keys : sequence of dict keys and/or list/array indices to look up in turn,
+        e.g. _safe_get_nested(dp_meta, 'microscope', 'C1', 0).
+    """
+    for k in keys:
+        try:
+            d = d[k]
+        except (KeyError, IndexError, TypeError):
+            return None
+    return d
+
+
+def print_diffraction_acquisition_summary(dp_meta, general_atts, nm_per_V):
+    """
+    Print key microscope/scan metadata about the diffraction data acquisition.
+
+    Since dp_meta and general_atts are decoded generically from whatever fields
+    happen to be present in the source Azorus .hp file (see
+    unpack_diffraction_meta_all), any of the specific entries printed here may
+    be absent for a given file/acquisition; each is looked up defensively via
+    _safe_get_nested and simply skipped (not printed) if missing, rather than
+    raising a KeyError/IndexError.
+
+    dp_meta : decoded 'diffraction/meta' dict, as returned by
+        unpack_diffraction_meta_all(f).
+    general_atts : decoded 'attrs' dict, as returned by
+        unpack_diffraction_meta_all(f, 'attrs').
+    nm_per_V : scan calibration (nm per volt), i.e.
+        general_atts['scanCalibration']/1e-9; used to report the scan field of
+        view alongside the raw metadata.
+    """
+    print('Key data about the diffraction data acquistion:\n')
+
+    print('\nMicroscope Params:\n')
+    mag = _safe_get_nested(dp_meta, 'microscope', 'Mag')
+    if mag is not None:
+        print(f"Scanning Mode Magnification: {mag:.0f}")
+    c1 = _safe_get_nested(dp_meta, 'microscope', 'C1', 0)
+    if c1 is not None:
+        print(f"C1 Lens Current (A): {c1:.5f}")  # C1 Lens Current
+    c2 = _safe_get_nested(dp_meta, 'microscope', 'C2', 0)
+    if c2 is not None:
+        print(f"C2 Lens Current (A): {c2:.5f}")  # C2 Lens Current
+    obj = _safe_get_nested(dp_meta, 'microscope', 'Obj', 0)
+    if obj is not None:
+        print(f"Objective Lens Current (A): {obj:.5f}")  # Objective Lens Current
+    gun_hv = _safe_get_nested(dp_meta, 'microscope', 'Gun.HighVoltage')
+    if gun_hv is not None:
+        print(f"Gun HV (kV): {gun_hv:.1f}")
+
+    print('\nScan Params:\n')
+    style_name = _safe_get_nested(general_atts, 'style', 'name')
+    if style_name is not None:
+        print(f"Mesh Style: {style_name}")
+    print(f"In-File Scan Calibration (nm/V): {nm_per_V:.4f}")
+    # general_atts['_overview_extent'] = [TopRowVoltage, LeftColVoltage, RowSpanVoltage, ColumnSpanVoltage]
+    overview_extent = _safe_get_nested(general_atts, '_overview_extent')
+    if overview_extent is not None:
+        scan_FOV = nm_per_V * np.array(overview_extent)[[3, 2]]  # (x, y) extent
+        print(f"Scan Extent (nm) {scan_FOV[0]:.2f} x {scan_FOV[1]:.2f}")
+# %%
+
 def azohp_to_py4d(loadupname, savepathname=None,
                    beam_kV=200, recon_pix_size=25e-12,
                    do_recentering=False, centre_method='fit', do_save=False,
@@ -954,26 +1021,10 @@ def azohp_to_py4d(loadupname, savepathname=None,
     
     print(f"Loaded File: {loadupname}")
     dp_meta, _ = unpack_diffraction_meta_all(f)
-    
-    print('Key data about the diffraction data acquistion:\n')
-    
-    print('\nMicroscope Params:\n')
-    print(f"Scanning Mode Magnification: {dp_meta['microscope']['Mag']:.0f}")
-    print(f"C1 Lens Current (A): {dp_meta['microscope']['C1'][0]:.5f}") # C1 Lens Current
-    print(f"C2 Lens Current (A): {dp_meta['microscope']['C2'][0]:.5f}") # C2 Lens Current
-    print(f"Objective Lens Current (A): {dp_meta['microscope']['Obj'][0]:.5f}") # Objective Lens Current
-    print(f"Gun HV (kV): {dp_meta['microscope']['Gun.HighVoltage']:.1f}") 
-    
     general_atts, _ = unpack_diffraction_meta_all(f, 'attrs')
-    print('\nScan Params:\n')
-    print(f"Mesh Style: {general_atts['style']['name']}")
     nm_per_V = general_atts['scanCalibration']/1e-9
-    print(f"In-File Scan Calibration (nm/V): {nm_per_V:.4f}")
-    # general_atts['_overview_extent'] = [TopRowVoltage, LeftColVoltage, RowSpanVoltage, ColumnSpanVoltage]
-    scan_FOV = nm_per_V * np.array(general_atts['_overview_extent'])[[3, 2]]  # (x, y) extent
-    print(f"Scan Extent (nm) {scan_FOV[0]:.2f} x {scan_FOV[1]:.2f}")
-    
- 
+    print_diffraction_acquisition_summary(dp_meta, general_atts, nm_per_V)
+
     # Determine the scan shape size, etc:
     
     # The (voltage) coordinates *******
@@ -1072,13 +1123,17 @@ def azohp_to_py4d(loadupname, savepathname=None,
     # plot 3
     if plot_virtual_diff:
         if bf_disk_radius is None:
+            if 'dp_mean' not in datacube.treekeys:
+                datacube.get_dp_mean()  # required in order to run get_probe_size
             r_est, _ , _ = datacube.get_probe_size(thresh_lower=0.05, thresh_upper=0.99)
             bf_disk_radius = r_est*1.2
         save_path = os.path.join(savepathname, corename_base + '_virtual_diff.png')
         plot_diffraction_and_virtual_images(datacube, loadupname, bf_disk_radius, save_path=save_path)
-    #%%    
+    #%%
     parallax = None
     if r_est is None:
+        if 'dp_mean' not in datacube.treekeys:
+            datacube.get_dp_mean()  # required in order to run get_probe_size
         r_est, _ , _ = datacube.get_probe_size(thresh_lower=0.05, thresh_upper=0.99)
     if get_parallax_plots or get_parallax_aberrations:
         # With explicit radius on BF disk
@@ -1119,7 +1174,6 @@ def azohp_to_py4d(loadupname, savepathname=None,
             plot_upsampled_FFT_comparison=alignment_plots,
         )
 
-        defocus, cs = None, None
         main_aberrations_and_params = None
         if get_parallax_aberrations:
             parallax = parallax.aberration_fit(
@@ -1138,13 +1192,13 @@ def azohp_to_py4d(loadupname, savepathname=None,
                                'rotation_degrees': np.rad2deg(parallax.rotation_Q_to_R_rads),
                                'approximate_beam_half_angle_mrad':(r_est/dp_size)*angular_FOV*1000,
                                'recon_pixel_size_pm':recon_pix_size*1e12,
-                               'diffraction_angular_FOV_mrad':angular_FOV*1000}
-        
-            defocus = parallax.aberration_dict_cartesian[(1,0,0)]['value [Ang]']
-            cs = parallax.aberration_dict_cartesian[(3,0,0)]['value [Ang]']
+                               'diffraction_angular_FOV_mrad':angular_FOV*1000,
+                               'transpose':parallax.transpose}
+                    
+  
 
-            print(f"Defocus (nm): {defocus/10:.5f}")
-            print(f"Spherical Aberration (mm): {cs/10**7:.5f}")
+            print(f"Defocus (nm): {main_aberrations_and_params['defocus']/10:.5f}")
+            print(f"Spherical Aberration (mm): {main_aberrations_and_params['cs']/10**7:.5f}")
 
         # plot 4
         if plot_parallax_recon:
@@ -1234,12 +1288,12 @@ if __name__ == "__main__":
     # range(1,4)
 
     for ii in range(0,len(fnames)):
-        datacube, parallax = azohp_to_py4d(
+        datacube = azohp_to_py4d(
             os.path.join(base_dir, fnames[ii]),
             savepathname=savepathname,
             beam_kV=200,
             recon_pix_size=25e-12,
-            do_recentering=True,
+            do_recentering=False,
             centre_method='simple',
             do_save=True,
             get_parallax_plots=True,

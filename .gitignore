@@ -1,0 +1,15 @@
+# Local backup / scratch data - not for public repo
+**/ArchiveBackups/
+**/private_notes/
+
+# Python bytecode cache
+**/__pycache__/
+*.pyc
+
+# Claude Code / Claude-related local files
+.claude/
+**/.claude/
+CLAUDE.md
+**/CLAUDE.md
+.claude.json
+.mcp.json
