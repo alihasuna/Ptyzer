@@ -10,3 +10,7 @@ The functions also provide features for performing basic checks, preprocessing a
 
 Utility functions to link into other ptychographic solvers, such as modified versions of
 PtychoShelves, such as provided at [PtychoRunner](https://github.com/ArthurBlackburn/PtychoRunner), or into advanced distortion correction routines, such as [emicroml](https://github.com/mrfitzpa/emicroml), will be provided in due course.
+
+## Local UI
+
+A local web UI for inspecting `.hp` files and running and monitoring conversions is in `ptyzer/ui`. Start it from the repository root with `python -m ptyzer.ui`; see [`ptyzer/ui/README.md`](ptyzer/ui/README.md).

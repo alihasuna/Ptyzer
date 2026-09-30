@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ptyzer</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script>
+    try { const t = localStorage.getItem("ptyzer.theme"); if (t) document.documentElement.dataset.theme = JSON.parse(t); } catch (e) {}
+  </script>
+  <script type="module" src="/static/js/main.js"></script>
+</head>
+<body>
+  <div class="app" id="app">
+    <header class="topbar">
+      <button class="icon-btn only-narrow" id="drawerToggle" aria-label="Show files"></button>
+      <a class="brand" href="#inspect" aria-label="Ptyzer home">
+        <svg class="brand-mark" viewBox="0 0 28 28" aria-hidden="true">
+          <rect x="1" y="1" width="26" height="26" rx="7" fill="var(--accent)"/>
+          <g fill="var(--on-accent)">
+            <circle cx="8" cy="8" r="1.5" opacity=".55"/><circle cx="14" cy="8" r="1.5" opacity=".55"/><circle cx="20" cy="8" r="1.5" opacity=".55"/>
+            <circle cx="8" cy="14" r="1.5" opacity=".55"/><circle cx="14" cy="14" r="2.1"/><circle cx="20" cy="14" r="1.5" opacity=".55"/>
+            <circle cx="8" cy="20" r="1.5" opacity=".55"/><circle cx="14" cy="20" r="1.5" opacity=".55"/><circle cx="20" cy="20" r="1.5" opacity=".55"/>
+          </g>
+          <circle cx="14" cy="14" r="4.6" fill="none" stroke="var(--on-accent)" stroke-width="1.4"/>
+        </svg>
+        <span class="brand-name">Ptyzer</span>
+        <span class="brand-sub">Azorus .hp · 4D-STEM</span>
+      </a>
+      <nav class="tabs" role="tablist" aria-label="Views">
+        <button class="tab" role="tab" data-view="inspect" aria-selected="true">Inspect</button>
+        <button class="tab" role="tab" data-view="runs" aria-selected="false">Runs <span class="count" id="runsCount" hidden></span></button>
+      </nav>
+      <div class="topbar-right">
+        <button class="env-pill" id="envPill" aria-haspopup="dialog" aria-expanded="false">
+          <span class="dot pulse"></span><span class="env-text">Checking environment…</span>
+        </button>
+        <button class="icon-btn" id="themeToggle" aria-label="Toggle light or dark theme"></button>
+      </div>
+    </header>
+    <aside class="sidebar" id="sidebar" aria-label="File browser"></aside>
+    <div class="drawer-scrim" id="drawerScrim"></div>
+    <main class="main">
+      <section class="view view-inspect" id="viewInspect">
+        <div class="inspect-scroll" id="inspect"></div>
+        <aside class="convert" id="convert" aria-label="Conversion settings"></aside>
+      </section>
+      <section class="view view-runs" id="viewRuns" hidden></section>
+    </main>
+  </div>
+  <div class="popover" id="envPopover" role="dialog" aria-label="Environment" hidden></div>
+  <div class="lightbox" id="lightbox" role="dialog" aria-label="Figure viewer" hidden></div>
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+</body>
+</html>
