@@ -98,16 +98,6 @@ def environment():
         except (OSError, TypeError):
             return None
 
-    fit_src = source(Parallax.aberration_fit)
-    if fit_src is not None and "self.aberration_dict_cartesian" not in fit_src:
-        checks.append({
-            "id": "aberration_dict", "status": "fail", "affects": ["aberrations"],
-            "title": "Aberration fitting will fail with this py4DSTEM",
-            "detail": (f"py4DSTEM {info['packages']['py4DSTEM']} stores fits as "
-                       "'aberrations_dict_cartesian' with a different layout, but Ptyzer reads "
-                       "'aberration_dict_cartesian'. Ptyzer was developed against py4DSTEM 0.14.14 "
-                       "(pip install \"py4DSTEM==0.14.14\" \"numpy<2\")."),
-        })
     recon_src = source(Parallax.reconstruct)
     numpy_major = int((info["packages"]["numpy"] or "0").split(".")[0])
     if recon_src is not None and numpy_major >= 2 and "float(self._recon_error)" in recon_src:

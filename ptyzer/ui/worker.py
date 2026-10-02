@@ -44,8 +44,9 @@ def build_plan(p):
             if p[param]: stages.append((key, label))
         if p["parallax"] or p["aberrations"]:
             stages.extend([("parallax_preprocess", "Quantem · build bright-field stack"),
-                           ("parallax_reconstruct", "Quantem · fit shifts and rotation")])
-            if p["aberrations"]: stages.append(("aberration_fit", "Quantem · Fourier-phase aberration fit"))
+                           ("parallax_reconstruct", "Quantem · fit shifts, rotation, C10/C12")])
+            if p["aberrations"] and p["quantem_least_squares"]:
+                stages.append(("aberration_fit", "Quantem · Fourier-phase refinement (unvalidated)"))
             stages.append(("parallax_subpixel", "Quantem · reconstruct at 4× sampling"))
             if p["plot_parallax_recon"]: stages.append(("parallax_fig", "Parallax summary figure"))
         if p["do_save"]: stages.append(("save", "Write Quantem .zarr.zip"))
@@ -90,6 +91,7 @@ def converter_kwargs(file, output_dir, p):
         plot_overview=p["plot_overview"],
         plot_virtual_diff=p["plot_virtual_diff"],
         plot_parallax_recon=p["plot_parallax_recon"],
+        force_transpose=p["force_transpose"],
     )
 
 
@@ -119,9 +121,6 @@ def emit(event, **data):
 
 def explain(exc, text):
     """A short, actionable hint for failures we know how to recognise."""
-    if "aberration_dict_cartesian" in text:
-        return ("This py4DSTEM version renamed the aberration-fit results Ptyzer reads. "
-                "Ptyzer was developed against py4DSTEM 0.14.14: pip install \"py4DSTEM==0.14.14\" \"numpy<2\".")
     if "only 0-dimensional arrays can be converted" in text:
         return "py4DSTEM's Parallax code is incompatible with numpy 2. Install numpy<2."
     if isinstance(exc, MemoryError):
@@ -231,17 +230,30 @@ def summarize(datacube, conv, p, captured):
             parallax = node
             break
     if parallax is not None and p["aberrations"] and hasattr(parallax, "rotation_Q_to_R_rads"):
-        fits = getattr(parallax, "aberration_dict_cartesian", None)
         try:
-            defocus = float(fits[(1, 0, 0)]["value [Ang]"])
-            cs = float(fits[(3, 0, 0)]["value [Ang]"])
+            defocus, cs = conv.parallax_defocus_and_cs_Ang(parallax)
             aberrations = {
                 "defocus_nm": defocus / 10,
                 "cs_mm": cs / 1e7,
                 "rotation_deg": float(np.rad2deg(parallax.rotation_Q_to_R_rads)),
                 "transpose": bool(parallax.transpose),
             }
+            polar = getattr(parallax, "aberrations_dict_polar", None)  # py4DSTEM >= 0.14.18
+            if polar is not None and "C12" in polar:
+                aberrations["astigmatism_nm"] = float(polar["C12"]) / 10
+            elif hasattr(parallax, "aberration_dict_cartesian"):
+                fits = parallax.aberration_dict_cartesian
+                a, b = (float(fits[(1, 2, i)]["value [Ang]"]) for i in (0, 1))
+                aberrations["astigmatism_nm"] = float(np.hypot(a, b)) / 10
             extra = captured.get("aberration_params") or {}
+            affine = conv.parallax_affine_defocus_Ang(parallax)
+            if affine is not None:
+                aberrations["defocus_affine_estimate_nm"] = affine / 10
+                if abs(defocus - affine) > 0.05 * max(abs(affine), 10.0):
+                    result["aberrations_warning"] = (
+                        f"Refined defocus ({defocus / 10:.3f} nm) disagrees with py4DSTEM's initial affine "
+                        f"estimate ({affine / 10:.3f} nm). With transpose on and a non-zero rotation the refined "
+                        "value is known to be scaled by cos(2 × rotation); compare with the Quantem engine.")
             if "approximate_beam_half_angle_mrad" in extra:
                 aberrations["beam_half_angle_mrad"] = float(extra["approximate_beam_half_angle_mrad"])
             result["aberrations"] = aberrations

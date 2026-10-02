@@ -55,7 +55,7 @@ def run_quantem(file, output_dir=None, params=None, emit_event=None):
     result = dict(backend='quantem', datacube_shape=list(array.shape), R_pixel_size=rstep, R_pixel_units='nm',
                   Q_pixel_size=qstep, Q_pixel_units='A^-1', diffraction_angular_FOV_mrad=fov,
                   output_file=None, output_format='.zarr.zip',
-                  method_note='Experimental Quantem backend. Validate against experimental reference data; fitting and interpolation differ from py4DSTEM.')
+                  method_note='Experimental Quantem backend. Cross-correlation fit validated on the synthetic ground truth only; validate against experimental reference data.')
 
     def save_figure(kind, fig):
         fig.suptitle(f'{stem} · Quantem {quantem.__version__}')
@@ -118,13 +118,23 @@ def run_quantem(file, output_dir=None, params=None, emit_event=None):
         semiangle = aperture_radius / mean.shape[-1] * fov
         result['aperture_estimate_mrad'] = semiangle
         dataset.metadata['semiangle_cutoff_mrad'] = semiangle
-        direct = DirectPtychography.from_dataset4d(dataset, energy=p['beam_kV']*1000, semiangle_cutoff=semiangle, rotation_angle=0.,
+        source = dataset
+        if p['force_transpose']:
+            # Same correction as py4DSTEM's force_transpose: swap the detector's row/column axes.
+            source = Dataset4dstem.from_array(dataset.array.swapaxes(-1, -2), name=stem,
+                                              sampling=dataset.sampling, units=dataset.units)
+        direct = DirectPtychography.from_dataset4d(source, energy=p['beam_kV']*1000, semiangle_cutoff=semiangle, rotation_angle=0.,
                  force_fitted_origin=tuple(v/2 for v in array.shape[-2:]), max_batch_size=64, device='cpu', rng=0)
         emit('stage', key='parallax_reconstruct')
+        # Cross-correlation shift fit (rotation, C10, C12). This is the step validated against the
+        # ground-truth sample (tests/test_ground_truth.py), and the one comparable to py4DSTEM's
+        # shift-based aberration_fit.
         direct.fit_hyperparameters_cross_correlation(bin_factors=(4,2,1), dft_upsample_factor=4,
                  deconvolution_kernel='parallax', parallax_flip_phase=False, max_batch_size=64)
         rotation = float(direct.hyperparameter_state.current_rotation_angle())
-        if p['aberrations']:
+        if p['aberrations'] and p['quantem_least_squares']:
+            # Fourier-phase least-squares refinement. Not validated: the synthetic sample has no
+            # contrast transfer, so it cannot test this step (it drives C10 to ~0 there).
             emit('stage', key='aberration_fit')
             direct.fit_hyperparameters_least_squares(rotation_angle=rotation, cartesian_basis='low_order',
                  deconvolution_kernel='parallax', parallax_flip_phase=False, max_batch_size=64)
@@ -140,10 +150,12 @@ def run_quantem(file, output_dir=None, params=None, emit_event=None):
         dataset.parallax_reconstruction = recon
         dataset.metadata['quantem_fit'] = dict(aberration_coefficients=coefs,
                coefficient_units={k: 'rad' if k.startswith('phi') else 'A' for k in coefs}, rotation_deg=rotation,
-               reconstruction_sampling_A=rstep*10/4, upsampling_factor=4, phase_flip=False)
+               reconstruction_sampling_A=rstep*10/4, upsampling_factor=4, phase_flip=False,
+               transpose=p['force_transpose'], least_squares_refinement=p['quantem_least_squares'])
         if p['aberrations']:
-            result['aberrations'] = dict(defocus_nm=coefs.get('C10', 0)/10,
-                 cs_mm=coefs.get('C30', 0)/1e7, rotation_deg=rotation, transpose=None)
+            result['aberrations'] = dict(defocus_nm=coefs.get('C10', 0)/10, astigmatism_nm=coefs.get('C12', 0)/10,
+                 cs_mm=coefs['C30']/1e7 if 'C30' in coefs else None, rotation_deg=rotation, transpose=p['force_transpose'],
+                 method='least squares (unvalidated)' if p['quantem_least_squares'] else 'cross-correlation')
         if p['plot_parallax_recon']:
             emit('stage', key='parallax_fig')
             figure('parallax_recon', [recon], ['Aligned BF (4× sampling; phase flip off)'])

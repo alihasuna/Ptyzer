@@ -25,15 +25,17 @@ No packages beyond what the converter itself needs (py4DSTEM, h5py, numpy, matpl
 
 ### py4DSTEM version
 
-`azohp_to_py4d.py` was developed against **py4DSTEM 0.14.14** with **numpy < 2**. Later py4DSTEM releases (0.14.18 onwards) store the aberration fit as `aberrations_dict_cartesian` with a different layout, so `get_parallax_aberrations=True` fails with an `AttributeError`. The UI detects this at start-up and shows a warning next to the affected options. A matching environment:
+`azohp_to_py4d.py` was developed against **py4DSTEM 0.14.14** and also runs on **0.14.18**, the current PyPI release. 0.14.18 renamed `Parallax.aberration_fit`'s arguments (silently ignoring the old ones, which dropped the fit to third order with no Cs) and its results (`aberrations_dict_cartesian`, keyed `'C10'`, `'C30'`, ...). `fit_parallax_aberrations` and `parallax_defocus_and_cs_Ang` in the converter handle both versions. Both need **numpy < 2** (0.14.18 pins `numpy<2.0`; Quantem pins `numpy>2`, so the two engines always need separate environments):
 
 ```bash
-pip install "py4DSTEM==0.14.14" "numpy<2"
+pip install "py4DSTEM==0.14.18" "numpy<2"
 ```
 
 ## Optional Quantem engine
 
-py4DSTEM stays the default. Quantem 0.1.9 can run in a separate Python environment:
+py4DSTEM stays the default. Quantem can run in a separate Python environment. The pin is a
+`dev` commit 376 commits after the v0.1.9 tag, although `quantem.__version__` still reports
+0.1.9; `pip install quantem` gives the older tag, which this adapter has not been tested with:
 
 ```bash
 python3.12 -m venv .venv-quantem
@@ -73,22 +75,37 @@ virtual BF/ADF images, matching the existing converter; reconstruction aperture
 is estimated from the mean intensity above half maximum. The overview QC uses the same Azorus overview and mesh extent convention
 as the original converter, with axes in nm.
 
-Quantem aligns BF shifts and rotation using cross-correlation, optionally fits a
-low-order basis including C10/C30 using Fourier-phase least squares, and uses the
-parallax kernel with phase flipping off and 4× reconstruction sampling. These
-are different algorithms from py4DSTEM's alignment, KDE upsampling and
-high-order shift fitting. Its detector rotation is displayed in Quantem's own
-convention, without pretending a py4DSTEM transpose flag exists. The adapter
-preserves the cross-correlation rotation through the 0.1.9 least-squares call.
+Quantem aligns the BF images by cross-correlation and fits rotation, defocus (C10) and
+two-fold astigmatism (C12) to the measured shifts, then reconstructs with the parallax kernel
+(phase flipping off, 4× sampling). This shift fit is what the engine reports. Its optional
+**Fourier-phase refinement** (least squares on a low-order basis that adds Cs) is off by default
+and marked unvalidated: the synthetic sample has no contrast transfer, so it cannot test that
+step, and on it the refinement drives defocus to about zero.
 
-A synthetic run establishes integration and archive fidelity, not scientific
-accuracy. Fitted defocus and rotation differed substantially between engines on
-the bundled lattice example. Compare reconstructions and coefficients on a real
-reference dataset with your supervisor before making Quantem the default.
+**Mirrored scans.** *Mirrored scan (transpose)* applies to both engines: py4DSTEM's
+`force_transpose`, and for Quantem a swap of the detector's row and column axes. One dataset
+cannot reveal a mirror. With the wrong setting, py4DSTEM reports the defocus as astigmatism (C12)
+with C1 near zero, while Quantem flips the sign of C10 and is about 90° out in rotation. Set it
+once per instrument from a defocus series: with the right setting the series changes C1.
+
+**Validation.** `tests/test_ground_truth.py` checks both engines against the synthetic sample's
+known defocus, rotation and mirror (see [QUANTEM_VALIDATION.md](QUANTEM_VALIDATION.md)). That
+establishes conventions and shift-fit accuracy, not accuracy on real data: compare reconstructions
+and coefficients on a real reference dataset before making Quantem the default.
+
+### Running the tests
+
+Each engine's tests skip when it isn't installed, so run them once per environment:
+
+```bash
+python3.12 -m venv .venv-py4d && .venv-py4d/bin/pip install "py4DSTEM==0.14.18" "numpy<2" pytest
+.venv-py4d/bin/python -m pytest tests
+.venv-quantem/bin/pip install pytest && .venv-quantem/bin/python -m pytest tests
+```
 
 ## What it does
 
-**Files (sidebar).** Browse folders, paste a path, and tick several `.hp` files for a batch run. Files that already have a `*_py4.h5` in `ReformattedForPy4DSTEM/` are marked *converted*. **Generate sample dataset** writes a small synthetic file (a 32 × 32 scan of a rotated lattice, with real parallax shifts) to the temp folder, so you can try everything without microscope data.
+**Files (sidebar).** Browse folders, paste a path, and tick several `.hp` files for a batch run. Files that already have a `*_py4.h5` in `ReformattedForPy4DSTEM/` are marked *converted*. **Generate sample dataset** writes a small synthetic file (a 48 × 48 scan of a rotated lattice, with parallax shifts from a known 5 nm defocus) to the temp folder, so you can try everything without microscope data.
 
 **Inspect.** For the selected file:
 - Pre-flight checks that mirror what the converter needs: required datasets, decodable metadata, scan calibration, mesh shape vs. coordinate and frame counts, square patterns, memory (the converter loads the whole stack into RAM), and whether the coordinates form the raster the reshape assumes (flags swapped, mirrored, rotated, or saw-tooth scan orders, the cases the converter's coordinate check figure describes).
@@ -113,6 +130,6 @@ browser ──HTTP/SSE──▶ server.py ──▶ hpfile.py        (read-only 
 - `worker.py` runs one conversion. It reports progress by wrapping, from the outside, the plot functions and `Parallax` methods the converter calls, emitting `@@PTYZER@@{json}` event lines. Everything else the converter prints passes through as log output.
 - `jobs.py` queues jobs, streams worker output (splitting tqdm's carriage-return updates from log lines) and handles cancellation.
 - `server.py` serves the app and a small JSON API (documented at the top of the file). It accepts only loopback `Host` headers and same-origin JSON POSTs.
-- `sample_data.py` writes the synthetic dataset (`python -m ptyzer.ui.sample_data out.hp --scan 32 --detector 128`).
+- `sample_data.py` writes the synthetic dataset (`python -m ptyzer.ui.sample_data out.hp --scan 48 --detector 96`); its `--shift-per-angle-nm`, `--rotation-deg` and `--transpose` options set the ground truth recorded in the file.
 
 Job history is kept in memory, so it clears when the server restarts. Output files stay on disk.

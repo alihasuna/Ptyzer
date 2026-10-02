@@ -41,6 +41,8 @@ DEFAULT_PARAMS = {
     "plot_overview": True,
     "plot_virtual_diff": True,
     "plot_parallax_recon": True,
+    "force_transpose": False,
+    "quantem_least_squares": False,
     "output_dir": "",
     "per_run_folder": True,
 }
@@ -74,7 +76,8 @@ def normalize_params(raw):
     else:
         positive("bf_disk_radius", "Bright-field disk radius")
     for name in ("do_recentering", "do_save", "parallax", "aberrations", "plot_coord_checks",
-                 "plot_overview", "plot_virtual_diff", "plot_parallax_recon", "per_run_folder"):
+                 "plot_overview", "plot_virtual_diff", "plot_parallax_recon", "per_run_folder",
+                 "force_transpose", "quantem_least_squares"):
         p[name] = bool(p[name])
     if p["centre_method"] not in ("fit", "simple"):
         raise ValueError("Centre method must be 'fit' or 'simple'")

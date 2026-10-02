@@ -71,6 +71,7 @@ export function pythonSnippet(files, p, outputDir) {
     `plot_overview=${py(p.plot_overview)},`,
     `plot_virtual_diff=${py(p.plot_virtual_diff)},`,
     `plot_parallax_recon=${py(p.plot_parallax_recon)},`,
+    `force_transpose=${py(p.force_transpose)},`,
   ];
   const head = "from ptyzer.io.azohp_to_py4d import azohp_to_py4d\n\n";
   if (files.length === 1) {
@@ -228,7 +229,11 @@ function render() {
       toggleRow("opt-parallax", "Parallax reconstruction", parallaxOn, (v) => set({ parallax: v }),
         { hint: quantem ? "Cross-correlation alignment and direct parallax reconstruction" : "Align bright-field images across the detector (py4DSTEM Parallax)", issues: compatIssues("parallax") }),
       toggleRow("opt-aberr", "Fit aberrations", s.aberrations, (v) => set({ aberrations: v }),
-        { hint: quantem ? "Rotation from shifts; low-order aberrations including Cs from Fourier-phase least squares" : "Defocus, Cs and the scan/detector rotation from the measured shifts", issues: compatIssues("aberrations") })),
+        { hint: quantem ? "Rotation, defocus C10 and astigmatism C12 from the cross-correlation shifts" : "Defocus, astigmatism, Cs and the scan/detector rotation from the measured shifts", issues: compatIssues("aberrations") }),
+      toggleRow("opt-transpose", "Mirrored scan (transpose)", s.force_transpose, (v) => set({ force_transpose: v }),
+        { disabled: quantem ? !parallaxOn : !s.aberrations, hint: "Scan and detector have opposite handedness. One dataset can't reveal this (a mirrored defocus fits as astigmatism), so set it once per instrument from a defocus series" }),
+      quantem && toggleRow("opt-ls", "Fourier-phase refinement (unvalidated)", s.quantem_least_squares, (v) => set({ quantem_least_squares: v }),
+        { disabled: !s.aberrations, hint: "Quantem least squares adds Cs and higher orders. Not yet validated: on the synthetic sample it drives defocus to ~0" })),
 
     h("section", { class: "section" },
       h("h3", null, "QC figures"),

@@ -33,7 +33,7 @@ export function focusFile(path) {
 }
 
 export async function generateSample() {
-  toast("Writing a synthetic 32 × 32 scan dataset…");
+  toast("Writing a synthetic 48 × 48 scan dataset…");
   try {
     const { path, dir } = await api.sample();
     await navigate(dir);

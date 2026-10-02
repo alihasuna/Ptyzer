@@ -1,47 +1,61 @@
-# Quantem integration check — 2026-09-30
+# Engine validation against synthetic ground truth — 2026-10-01
 
-Reference source: Quantem 0.1.9, commit
-`55a0b01706de9747e91b9323a283e09bd82c97ab`. py4DSTEM 0.14.14 ran in a
-separate environment with NumPy 1.26.4; Quantem used NumPy 2.5.3.
+Supersedes the 2026-09-30 check, whose sample had an unintended scan/detector mirror: its
+pure defocus read as astigmatism in py4DSTEM (C1 ≈ 0, C12 ≈ 5.4 nm) and was not comparable
+between engines.
 
-Both engines completed the full pipeline on the bundled Synthetic Lattice
-Dataset from `sample_data.py`, using 200 kV, 25 pm reciprocal-calibration
-input, estimated BF radius, no recentering, all figures, reconstruction,
-aberration fitting and native export.
+Environments: py4DSTEM 0.14.14 and 0.14.18 (each with NumPy 1.26.4); Quantem at commit
+`55a0b01706de9747e91b9323a283e09bd82c97ab` (reports 0.1.9, but is 376 commits after the v0.1.9
+tag) with NumPy 2.5.3 and PyTorch 2.14.1. Reproduce with `pytest tests` in each environment.
 
-| Result | py4DSTEM | Quantem |
-| --- | --- | --- |
-| Data shape | 32 × 32 × 128 × 128 | 32 × 32 × 128 × 128 |
-| Scan sampling | 51.6204486021 pm | 51.6204486021 pm |
-| Reciprocal sampling | 0.03125 Å⁻¹ | 0.03125 Å⁻¹ |
-| Angular field of view | 100.317361275 mrad | 100.317361275 mrad |
-| QC figures | 4 PNGs | 4 PNGs |
-| Native export | EMD `.h5` | Zarr `.zarr.zip` |
-| Displayed fitted defocus | 0.0081478 nm | −8.0403557 nm |
-| Displayed fitted Cs | −2.666e−10 mm | −6.0659082e−11 mm |
-| Displayed fitted rotation | −0.07° Q → R | −47.04745° detector rotation |
+## Sample
 
-The fitting methods, rotation conventions and upsampling algorithms differ.
-These fitted values are not established as equivalent or accurate. The lattice
-sample is a UI fixture, not a physical reference simulation. Keep py4DSTEM as
-the default until real microscope data and a reference result are reviewed.
+`sample_data.py`, 48 × 48 scan, 96 × 96 detector, 200 kV and 25 pm calibration. Each
+bright-field pixel sees the specimen displaced by 5 nm per radian of probe angle (a 5 nm
+defocus), optionally rotated and/or with the detector axes swapped (mirror). The truth is stored
+in the file as `diffraction/meta['synthetic_truth']`. The sample has no contrast transfer, so it
+tests shift-based fits only.
 
-Manual checks completed:
+## Results
 
-- Conversion, progress, results and all four figures from both engines through
-  the browser, with no browser error/warning logs during the checked runs.
-- Reloaded the py4DSTEM export; every saved intensity equalled its input.
-- Reloaded the Quantem archive with `quantem.core.io.load`; every saved raw
-  intensity, voltage-coordinate pair and original JSON metadata blob equalled
-  the input. Scan sampling converted from nm to Å correctly. The archive
-  included a finite 128 × 128 reconstructed image and fitted parameters.
-- Both global and plane-fit Quantem recentering paths completed QC/export and
-  reloaded as finite float32 intensity arrays. Reconstruction also completed
-  with optional aberration fitting and file saving disabled.
-- Python and changed JavaScript files passed syntax checks. Invalid engine
-  names and non-finite/non-positive calibration inputs were rejected.
-- Cancelling a job between dequeue and process creation prevented worker
-  creation in a controlled check. The process-start lock also covers publishing
-  the process and its input, allowing cancellation to find a starting worker.
+Defocus in nm (truth +5.0 unless noted), rotation in degrees.
 
-Setup, native output loading and method details are in [README.md](README.md).
+| Case | py4DSTEM C1 | py4DSTEM rotation | Quantem C10 | Quantem rotation |
+| --- | --- | --- | --- | --- |
+| No mirror, 0° | +4.936 | +0.02 | +5.056 | +1.89 |
+| Defocus −5 nm | −4.936 | +0.03 | −5.056 | +1.90 |
+| No mirror, 30° | +4.934 | +30.03 | +5.055 | +31.90 |
+| Mirror, transpose on, 0° | +4.934 | +0.02 | +5.054 | +1.89 |
+| Mirror, transpose on, 30° | **+2.467** | +30.01 | +5.056 | +31.88 |
+| Mirror, transpose off, 0° | C1 ≈ 0, C12 = 4.934 | +89.98 | **−5.054** | +88.11 |
+
+- Both engines report C1/C10 with the same sign as the input and the same rotation sense.
+- py4DSTEM's C1 is 1.3 % low and Quantem's C10 1.1 % high. Quantem's rotation carries an
+  unexplained +1.9° offset.
+- **py4DSTEM, mirror and rotation:** the refined C1 is scaled by cos(2 × rotation) in both
+  0.14.14 and 0.14.18, while its initial affine estimate (`aberrations_C1`) is correct. Forcing
+  the rotation to the negated angle restores the right C1, which points to a rotation-sign
+  inconsistency under `force_transpose` in the refined fit. The converter now prints a warning
+  and the UI shows one when the two estimates disagree by more than 5 %. Not yet reported
+  upstream.
+- **Mirror detection:** neither engine can tell from one dataset. With the wrong setting,
+  py4DSTEM reads the defocus as astigmatism, Quantem as a sign-flipped defocus about 90° out in
+  rotation.
+- **Quantem least-squares refinement** (now opt-in): drives C10 to about −0.2 nm on this sample.
+  Untested until validated on a physical simulation.
+- **Scan size:** on the previous 32 × 32 sample (1.6 nm field of view) Quantem's
+  reference alignment was unstable (C10 −1.9 nm at −69°); hence the larger default sample.
+
+## py4DSTEM 0.14.18 compatibility
+
+0.14.18 renamed `Parallax.aberration_fit`'s arguments and silently ignored the old names, so the
+converter's fit ran to third order only (C30 exactly 0), then crashed reading the renamed results.
+`fit_parallax_aberrations` and `parallax_defocus_and_cs_Ang` handle both versions; the two
+versions now agree to 0.001 nm on every case above.
+
+## Data fidelity
+
+`tests/test_ground_truth.py` also checks that the py4DSTEM `.h5` reloads with identical
+intensities, that the Quantem `.zarr.zip` reloads with identical intensities, the raw `attrs`
+JSON and the raw voltage coordinates, and that both engines use identical real- and
+reciprocal-space calibration.

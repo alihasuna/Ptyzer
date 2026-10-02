@@ -35,6 +35,7 @@ import json
 import matplotlib.pyplot as plt
 from matplotlib import cm
 import base64
+import inspect
 import os
 import uuid
 import textwrap
@@ -717,6 +718,67 @@ def _measured_shift_maps(parallax):
     return asnumpy(measured_shifts_sx), asnumpy(measured_shifts_sy)
 
 
+def fit_parallax_aberrations(parallax, max_radial_order=6, max_angular_order=4, force_transpose=False):
+    """
+    Run Parallax.aberration_fit() on the measured BF shifts, across py4DSTEM versions.
+
+    py4DSTEM 0.14.18 renamed aberration_fit's arguments (fit_aberrations_max_radial_order ->
+    max_radial_order, etc., and dropped fit_BF_shifts) and accepts **kwargs, so the old names are
+    silently ignored there and the fit falls back to max_radial_order=3 (no Cs). It also stopped
+    storing the Angstrom-scaled shifts (_xy_shifts_Ang) that _plot_bf_shifts_on_axis and
+    _measured_shift_maps use; they are restored here exactly as 0.14.14 computed them.
+
+    Returns the fitted parallax.
+    """
+    params = inspect.signature(parallax.aberration_fit).parameters
+    if 'fit_BF_shifts' in params:  # py4DSTEM <= 0.14.14
+        parallax = parallax.aberration_fit(
+            fit_BF_shifts=True,
+            fit_aberrations_max_radial_order=max_radial_order,
+            fit_aberrations_max_angular_order=max_angular_order,
+            force_transpose=force_transpose,
+            plot_BF_shifts_comparison=False,
+        )
+    else:
+        parallax.aberration_fit(
+            max_radial_order=max_radial_order,
+            max_angular_order=max_angular_order,
+            force_transpose=force_transpose,
+            plot_BF_shifts_comparison=False,
+        )
+    if not hasattr(parallax, '_xy_shifts_Ang'):
+        xp = parallax._xp
+        shifts = xp.flip(parallax._xy_shifts, axis=1) if parallax.transpose else parallax._xy_shifts
+        parallax._xy_shifts_Ang = shifts * xp.array(parallax._scan_sampling)
+    return parallax
+
+
+def parallax_defocus_and_cs_Ang(parallax):
+    """
+    Return the fitted (C1, C3) = (defocus, Cs) coefficients, in Angstroms, from a Parallax
+    instance that has had aberration_fit() run on it. py4DSTEM <= 0.14.14 stores them in
+    aberration_dict_cartesian[(m, n, a)]['value [Ang]']; 0.14.18 in aberrations_dict_cartesian
+    under 'C10' / 'C30'.
+    """
+    if hasattr(parallax, 'aberrations_dict_cartesian'):
+        fits = parallax.aberrations_dict_cartesian
+        return float(fits['C10']), float(fits['C30'])
+    fits = parallax.aberration_dict_cartesian
+    return float(fits[(1, 0, 0)]['value [Ang]']), float(fits[(3, 0, 0)]['value [Ang]'])
+
+
+def parallax_affine_defocus_Ang(parallax):
+    """
+    Return the defocus (Angstroms) from aberration_fit()'s initial affine (polar decomposition)
+    estimate, which the refined fit starts from (aberration_C1 in py4DSTEM <= 0.14.14,
+    aberrations_C1 in 0.14.18). The two should agree. With force_transpose=True and a non-zero
+    rotation, the refined C1 in both versions comes out scaled by cos(2 * rotation) on synthetic
+    data with a known answer, while this estimate stays correct, so a disagreement flags that case.
+    """
+    value = getattr(parallax, 'aberrations_C1', getattr(parallax, 'aberration_C1', None))
+    return None if value is None else float(value)
+
+
 def plot_parallax_summary(parallax, loadupname, aberration_params=None, save_path=None):
     """
     Show, in a single figure with eight subplots, everything the parallax
@@ -927,7 +989,7 @@ def azohp_to_py4d(loadupname, savepathname=None,
                    do_recentering=False, centre_method='fit', do_save=False,
                    get_parallax_plots=False, get_parallax_aberrations=False, bf_disk_radius=None,
                    plot_coord_checks=False, plot_overview=False, plot_virtual_diff=False,
-                   plot_parallax_recon=False):
+                   plot_parallax_recon=False, force_transpose=False):
     """
     Convert a single Azorus-generated .hp file into a py4DSTEM DataCube, recenter
     the diffraction stack, and run a Parallax aberration reconstruction on it.
@@ -973,6 +1035,12 @@ def azohp_to_py4d(loadupname, savepathname=None,
         .aberration_fit() on the reconstruction, extracting/printing the fitted
         defocus and spherical aberration and populating the aberration_params
         text panel in the plot_parallax_recon figure.
+
+    force_transpose : passed to Parallax.aberration_fit(). Set True when the scan and detector
+        axes have opposite handedness (a mirror). This cannot be detected from one dataset: a
+        mirrored defocus fits equally well as pure two-fold astigmatism (C12) with C1 near zero.
+        It is a property of the instrument/scan set-up; a defocus series settles it (the change
+        appears in C1 with the correct setting, in C12 with the wrong one).
 
     Each plot_* flag below both displays and saves (as a PNG in savepathname,
     named from loadupname the same way as the '_py4.h5' output) one of the four
@@ -1176,29 +1244,30 @@ def azohp_to_py4d(loadupname, savepathname=None,
 
         main_aberrations_and_params = None
         if get_parallax_aberrations:
-            parallax = parallax.aberration_fit(
-                fit_BF_shifts=True,
-                fit_aberrations_max_radial_order=6,
-                fit_aberrations_max_angular_order=4,
-                # Suppressed: aberration_fit()'s own BF-shifts comparison plot always opens its own
-                # figure. The (rotation-corrected) shifts are instead redrawn inside
-                # plot_parallax_summary below.
-                plot_BF_shifts_comparison=False,
-            )
+            # BF-shifts comparison plot suppressed: aberration_fit()'s own plot always opens its own
+            # figure. The (rotation-corrected) shifts are instead redrawn inside
+            # plot_parallax_summary below.
+            parallax = fit_parallax_aberrations(parallax, max_radial_order=6, max_angular_order=4,
+                                                force_transpose=force_transpose)
             # extract key first order aberrations:
-                
-            main_aberrations_and_params = {'defocus': parallax.aberration_dict_cartesian[(1,0,0)]['value [Ang]'],
-                               'cs': parallax.aberration_dict_cartesian[(3,0,0)]['value [Ang]'],
+            defocus_Ang, cs_Ang = parallax_defocus_and_cs_Ang(parallax)
+            main_aberrations_and_params = {'defocus': defocus_Ang,
+                               'cs': cs_Ang,
                                'rotation_degrees': np.rad2deg(parallax.rotation_Q_to_R_rads),
                                'approximate_beam_half_angle_mrad':(r_est/dp_size)*angular_FOV*1000,
                                'recon_pixel_size_pm':recon_pix_size*1e12,
                                'diffraction_angular_FOV_mrad':angular_FOV*1000,
                                'transpose':parallax.transpose}
-                    
-  
+            affine_defocus_Ang = parallax_affine_defocus_Ang(parallax)
+            if affine_defocus_Ang is not None:
+                main_aberrations_and_params['defocus_affine_estimate'] = affine_defocus_Ang
 
             print(f"Defocus (nm): {main_aberrations_and_params['defocus']/10:.5f}")
             print(f"Spherical Aberration (mm): {main_aberrations_and_params['cs']/10**7:.5f}")
+            if affine_defocus_Ang is not None and \
+                    abs(defocus_Ang - affine_defocus_Ang) > 0.05 * max(abs(affine_defocus_Ang), 10.0):
+                print(f"WARNING: refined defocus ({defocus_Ang/10:.3f} nm) disagrees with the initial "
+                      f"affine estimate ({affine_defocus_Ang/10:.3f} nm). See parallax_affine_defocus_Ang.")
 
         # plot 4
         if plot_parallax_recon:
@@ -1246,7 +1315,7 @@ def azohp_to_py4d(loadupname, savepathname=None,
         
     # load aberrations back by for example: 
     # test = datacube.tree('parallax_reconstruction')
-    # test.aberration_dict_cartesian[(1,0,0)]
+    # parallax_defocus_and_cs_Ang(test)
     
 
     if do_save:
