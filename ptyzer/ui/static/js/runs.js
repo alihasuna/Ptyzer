@@ -2,11 +2,11 @@
 // the selected job on the right.
 
 import { api } from "./api.js";
-import { callout, card, clear, copyText, fmt, h, icon, toast } from "./dom.js";
+import { button, callout, card, clear, copyText, fmt, h, pathText, status, toast } from "./dom.js";
 import { focusFile } from "./browser.js";
-import { pythonSnippet } from "./convert.js";
+import { loadSettings, pythonSnippet } from "./convert.js";
 import { isActive, refreshJobs } from "./jobstore.js";
-import { openLightbox } from "./lightbox.js";
+import { figureGrid } from "./lightbox.js";
 import { state, subscribe, update } from "./state.js";
 
 const root = document.getElementById("viewRuns");
@@ -18,11 +18,17 @@ const FIGURE_KINDS = [
 ];
 const PARAM_LABELS = {
   backend: ["Engine"],
-  beam_kV: ["Beam energy", "kV"], recon_pix_size_pm: ["Reconstruction pixel size", "pm"],
+  beam_kV: ["Beam energy", "kV"], recon_pix_size_pm: ["Recon. pixel size", "pm"],
   bf_disk_radius: ["BF disk radius", "px"], do_recentering: ["Recentering"], centre_method: ["Centre method"],
   do_save: ["Save dataset"], parallax: ["Parallax"], aberrations: ["Aberration fit"],
+  force_transpose: ["Mirrored scan"], quantem_least_squares: ["LS refinement"],
   plot_coord_checks: ["Coordinate figure"], plot_overview: ["Overview figure"],
   plot_virtual_diff: ["Virtual images figure"], plot_parallax_recon: ["Parallax figure"],
+};
+// Job status as a dot plus a word (never colour alone).
+const JOB_STATUS = {
+  queued: ["idle", "Queued"], running: ["run", "Running"], done: ["ok", "Done"],
+  failed: ["error", "Failed"], cancelled: ["idle", "Cancelled"],
 };
 
 // Live stream for the selected job's log.
@@ -35,13 +41,14 @@ let progressEl = null;
 let pendingFlush = false;
 let refreshSoon = null;
 let ticker = null;
+let liveEl = null;
+let lastAnnounced = null;
 
 const now = () => Date.now() / 1000;
 
-function statusIcon(status) {
-  if (status === "running") return h("span", { class: "status-icon" }, h("span", { class: "spinner" }));
-  const name = { done: "check", failed: "alert", cancelled: "stop", queued: "clock" }[status] || "clock";
-  return h("span", { class: `status-icon ${status}` }, icon(name, "sm"));
+function jobStatus(job) {
+  const [kind, word] = JOB_STATUS[job.status] || ["idle", job.status];
+  return status(kind, word);
 }
 
 function stageStatus(job, key) {
@@ -67,11 +74,17 @@ function subtitle(job) {
   if (job.status === "queued") return "Waiting in queue";
   if (job.status === "running") {
     const stage = job.plan.find((st) => st.key === job.stage);
-    return stage ? stage.label : "Starting…";
+    return stage ? stage.label : "Starting";
   }
   if (job.status === "done") return `Finished in ${fmt.duration(job.finished - job.started)}`;
   if (job.status === "cancelled") return "Cancelled";
   return job.error ? `${job.error.type_name || "Error"}: ${job.error.message}` : "Failed";
+}
+
+function progressBar(job, label) {
+  const pct = Math.round(progressFraction(job) * 100);
+  return h("div", { class: "es-progress", role: "progressbar", "aria-label": label,
+    "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(pct) }, h("span", { style: { width: `${pct}%` } }));
 }
 
 // -- list --------------------------------------------------------------------------------------
@@ -79,55 +92,57 @@ function subtitle(job) {
 function renderList() {
   const jobs = state.jobs;
   const finished = jobs.filter((j) => !isActive(j));
-  return h("div", { class: "runs-list" },
-    h("div", { class: "runs-list-head" },
-      h("span", { class: "sidebar-title" }, "Runs", jobs.length > 0 && h("span", { class: "faint", style: { fontWeight: 400, marginLeft: "6px" } }, jobs.length)),
-      finished.length > 0 && h("button", {
-        class: "btn sm ghost", onClick: async () => {
-          await Promise.all(finished.map((j) => api.jobAction(j.id, "remove").catch(() => null)));
-          refreshJobs();
+  return h("section", { class: "pz-runs-list", "aria-labelledby": "runsListTitle" },
+    h("div", { class: "es-section-head pz-sidebar-title" },
+      h("h2", { class: "es-h3", id: "runsListTitle" }, "Runs", jobs.length > 0 && h("span", { class: "es-caption es-num" }, ` ${jobs.length}`)),
+      finished.length > 0 && button("Clear finished", async () => {
+        await Promise.all(finished.map((j) => api.jobAction(j.id, "remove").catch(() => null)));
+        refreshJobs();
+      }, { size: "sm", variant: "quiet" })),
+    jobs.length === 0
+      ? h("p", { class: "es-caption pz-list-note" }, "No runs yet. Queue a conversion from the Inspect view.")
+      : h("ul", { class: "pz-run-items" }, jobs.map((job) => h("li", null,
+        h("button", {
+          type: "button", class: "pz-run", "aria-current": job.id === state.activeJobId ? "true" : null,
+          dataset: { key: job.id }, onClick: () => update({ activeJobId: job.id }),
         },
-      }, "Clear finished")),
-    h("div", { class: "runs-items" },
-      jobs.length === 0
-        ? h("div", { class: "list-note" }, "No runs yet. Queue a conversion from the Inspect view.")
-        : jobs.map((job) => h("button", {
-          class: "run-item", "aria-current": String(job.id === state.activeJobId),
-          onClick: () => update({ activeJobId: job.id }),
-        },
-          statusIcon(job.status),
-          h("span", { class: "run-name", title: job.file }, job.name),
-          h("span", { class: "run-time" }, fmt.time(job.created)),
-          h("span", { class: "run-sub", title: subtitle(job) }, `${job.params.backend === "quantem" ? "Quantem" : "py4DSTEM"} · ${subtitle(job)}`),
-          isActive(job) && h("span", { class: "run-bar" }, h("i", { style: { width: `${Math.round(progressFraction(job) * 100)}%` } }))))));
+          h("span", { class: "pz-run-top" }, jobStatus(job), h("span", { class: "es-caption es-num" }, fmt.time(job.created))),
+          h("span", { class: "pz-run-name", title: job.file }, job.name),
+          h("span", { class: "pz-run-sub es-caption", title: subtitle(job) },
+            `${job.params.backend === "quantem" ? "Quantem" : "py4DSTEM"} · ${subtitle(job)}`),
+          isActive(job) && progressBar(job, `${job.name} progress`))))));
 }
 
 // -- detail ------------------------------------------------------------------------------------
 
+const STEP_WORD = { failed: "Failed", cancelled: "Cancelled", skipped: "Skipped", running: "In progress" };
+
 function pipeline(job) {
+  const done = job.plan.filter((st) => stageStatus(job, st.key) === "done").length;
   return card({
-    title: "Pipeline", iconName: "pulse",
-    sub: `${job.plan.filter((st) => stageStatus(job, st.key) === "done").length} of ${job.plan.length} steps`,
-    bodyClass: "card-body flush",
-    body: h("ol", { class: "pipeline" }, job.plan.map((st) => {
-      const status = stageStatus(job, st.key);
-      const timing = job.stages[st.key];
-      const dot = status === "running" ? h("span", { class: "spinner", style: { width: "12px", height: "12px" } })
-        : status === "done" ? icon("check") : status === "failed" ? icon("x") : status === "cancelled" ? icon("stop")
-        : h("span", { class: "step-pending-dot" });
-      return h("li", { class: `step ${status}` },
-        h("span", { class: "step-dot" }, dot),
-        h("span", { class: "step-label" }, st.label),
-        h("span", { class: "step-time", "data-stage": st.key },
-          timing ? fmt.duration((timing.end || now()) - timing.start) : ""));
-    })),
+    title: "Pipeline", sub: `${done} of ${job.plan.length} steps`,
+    body: [
+      h("ol", { class: "es-steps pz-steps" }, job.plan.map((st) => {
+        const s = stageStatus(job, st.key);
+        const timing = job.stages[st.key];
+        const cls = s === "done" ? "is-done" : s === "pending" || s === "skipped" ? "is-pending" : s === "running" ? "" : `is-${s}`;
+        return h("li", { class: cls },
+          h("span", { class: "pz-step-label" }, st.label,
+            STEP_WORD[s] && h("span", { class: "pz-step-word" }, ` · ${STEP_WORD[s]}`),
+            s === "done" && h("span", { class: "es-sr-only" }, " · Done"),
+            s === "pending" && h("span", { class: "es-sr-only" }, " · Pending")),
+          h("span", { class: "pz-step-time es-num", "data-stage": st.key },
+            timing ? fmt.duration((timing.end || now()) - timing.start) : ""));
+      })),
+      progressBar(job, "Pipeline progress"),
+    ],
   });
 }
 
 function metric(label, value, unit, hero) {
-  return h("div", { class: `metric${hero ? " hero" : ""}` },
-    h("div", { class: "metric-label", title: label }, label),
-    h("div", { class: "metric-value", title: `${value}${unit ? ` ${unit}` : ""}` }, value, unit && h("span", { class: "unit" }, unit)));
+  return h("div", { class: `pz-metric${hero ? " is-hero" : ""}` },
+    h("dt", null, label),
+    h("dd", { class: "es-num" }, value, unit && h("span", { class: "pz-unit" }, ` ${unit}`)));
 }
 
 function results(job) {
@@ -135,12 +150,8 @@ function results(job) {
   if (!r) {
     if (job.status === "failed" || job.status === "cancelled") return null;
     return card({
-      title: "Results", iconName: "sparkle",
-      body: h("div", { class: "results-stack" },
-        h("div", { class: "metrics" }, [0, 1, 2, 3].map(() => h("div", { class: "metric" },
-          h("div", { class: "skeleton", style: { height: "11px", width: "60%", marginBottom: "8px" } }),
-          h("div", { class: "skeleton", style: { height: "20px", width: "80%" } })))),
-        h("div", { class: "hint" }, job.status === "queued" ? "Results appear when the run finishes." : "Running…")),
+      title: "Results",
+      body: h("p", { class: "es-caption" }, job.status === "queued" ? "Results appear when the run finishes." : "Results appear when the run finishes. It is running now."),
     });
   }
   const a = r.aberrations;
@@ -148,10 +159,10 @@ function results(job) {
   const rUnits = r.R_pixel_units === "A" ? "Å" : r.R_pixel_units;
   const qUnits = (r.Q_pixel_units || "").replace("A^-1", "Å⁻¹");
   return card({
-    title: "Results", iconName: "sparkle", sub: `in ${fmt.duration(r.elapsed_s)}`,
-    body: h("div", { class: "results-stack" },
-      a && h("div", { class: "results-label" }, "Aberration fit"),
-      a && h("div", { class: "metrics" },
+    title: "Results", sub: `in ${fmt.duration(r.elapsed_s)}`,
+    body: h("div", { class: "pz-stack" },
+      a && h("h3", { class: "pz-subhead" }, "Aberration fit"),
+      a && h("dl", { class: "pz-metrics" },
         metric("Defocus", fmt.sig(a.defocus_nm, 5), "nm", true),
         a.astigmatism_nm != null && metric("Astigmatism C12", fmt.sig(a.astigmatism_nm, 4), "nm"),
         metric("Spherical aberration Cs", a.cs_mm == null ? "not fitted" : fmt.sig(a.cs_mm, 4), a.cs_mm == null ? "" : "mm"),
@@ -161,17 +172,22 @@ function results(job) {
       r.method_note && callout("info", "Quantem method", r.method_note),
       r.aberrations_error && callout("warn", "Couldn't read the aberration fit", r.aberrations_error),
       r.aberrations_warning && callout("warn", "Inconsistent defocus fit", r.aberrations_warning),
-      h("div", { class: "results-label" }, "Data cube"),
-      h("div", { class: "metrics" },
+      (r.preflight_warnings || []).map((w) => callout("warn", "Pre-flight warning", w)),
+      h("h3", { class: "pz-subhead" }, "Data cube"),
+      h("dl", { class: "pz-metrics" },
         metric("Shape", r.datacube_shape.join(" × ")),
         metric("Real-space pixel", fmt.sig(r.R_pixel_size * (rUnits === "nm" ? 1000 : 1), 4), rUnits === "nm" ? "pm" : rUnits),
         metric("Reciprocal pixel", fmt.sig(r.Q_pixel_size, 4), qUnits),
         r.diffraction_angular_FOV_mrad != null && metric("Angular FOV", fmt.fixed(r.diffraction_angular_FOV_mrad, 1), "mrad")),
-      output && h("div", { class: "path-row" },
-        h("span", { class: "badge ok" }, r.output_format || ".h5"),
-        h("span", { class: "mono", title: output }, `‎${output}`),
-        h("button", { class: "icon-btn sm", title: "Copy path", "aria-label": "Copy path", onClick: () => copyText(output, "Path copied") }, icon("copy", "sm")),
-        h("button", { class: "icon-btn sm", title: "Reveal", "aria-label": "Reveal file", onClick: () => api.reveal(output).catch((e) => toast(e.message, { kind: "fail" })) }, icon("reveal", "sm")))),
+      output && h("div", { class: "pz-path-row" },
+        h("span", { class: "pz-tag" }, r.output_format || ".h5"),
+        pathText(output),
+        button("Copy", () => copyText(output, "Path copied"), { size: "sm", variant: "quiet", ariaLabel: "Copy output path" }),
+        button("Reveal", () => api.reveal(output).catch((e) => toast(e.message, { kind: "fail" })), { size: "sm", variant: "quiet", ariaLabel: "Reveal output file" })),
+      r.record_file && h("div", { class: "pz-path-row" },
+        h("span", { class: "pz-tag", title: "Run record: engine, input fingerprint, parameters, results and conventions" }, "Record"),
+        pathText(r.record_file),
+        button("Copy", () => copyText(r.record_file, "Path copied"), { size: "sm", variant: "quiet", ariaLabel: "Copy run record path" }))),
   });
 }
 
@@ -180,34 +196,22 @@ function figures(job) {
   const expected = FIGURE_KINDS.filter(([param, kind]) => job.params[param] && (kind !== "parallax_recon" || parallaxOn));
   if (!expected.length && !job.figures.length) return null;
   const items = job.figures.map((f) => ({ src: `${api.figureUrl(job.id, f.index)}?t=${job.finished || ""}`, label: f.label, sub: job.name }));
-  const tiles = expected.map(([, kind, label]) => {
-    const i = job.figures.findIndex((f) => f.kind === kind);
-    if (i === -1) {
-      const waiting = isActive(job);
-      return h("button", { class: "thumb", disabled: true },
-        h("div", { class: "thumb-img pending" }, waiting ? h("span", { class: "spinner" }) : icon("image"), waiting ? "Pending" : "Not produced"),
-        h("div", { class: "thumb-label faint" }, label));
-    }
-    return h("button", { class: "thumb", onClick: () => openLightbox(items, i) },
-      h("div", { class: "thumb-img" }, h("img", { src: items[i].src, alt: label })),
-      h("div", { class: "thumb-label" }, icon("image", "sm"), label));
-  });
+  const missing = expected.filter(([, kind]) => !job.figures.some((f) => f.kind === kind))
+    .map(([, , label]) => ({ label, state: isActive(job) ? "Pending" : "Not produced" }));
   return card({
-    title: "QC figures", iconName: "image", sub: `${job.figures.length} of ${expected.length}`,
-    actions: job.figures.length > 0 && h("button", { class: "btn sm", onClick: () => api.reveal(job.output_dir) }, icon("reveal", "sm"), "Open folder"),
-    body: h("div", { class: "thumbs" }, tiles),
+    title: "QC figures", sub: `${job.figures.length} of ${expected.length}`,
+    actions: job.figures.length > 0 && button("Open folder", () => api.reveal(job.output_dir), { size: "sm", variant: "quiet" }),
+    body: figureGrid(items, missing),
   });
 }
 
 function logCard(job) {
-  consoleEl = h("pre", { class: "console", tabindex: "0", "aria-label": "Conversion log" });
-  progressEl = h("div", { class: "progress-line", hidden: true });
+  consoleEl = h("pre", { class: "es-log pz-log", tabindex: "0", "aria-label": "Conversion log" });
+  progressEl = h("div", { class: "pz-progress-line", hidden: true });
   const el = card({
-    title: "Log", iconName: "terminal",
-    actions: [
-      h("button", { class: "btn sm", onClick: () => copyText(logLines.join("\n"), "Log copied") }, icon("copy", "sm"), "Copy"),
-    ],
-    bodyClass: "", body: [progressEl, consoleEl],
+    title: "Log",
+    actions: button("Copy", () => copyText(logLines.join("\n"), "Log copied"), { size: "sm", variant: "quiet", ariaLabel: "Copy log" }),
+    body: [progressEl, consoleEl],
   });
   flushConsole(true);
   return el;
@@ -237,6 +241,7 @@ function flushConsole(full = false) {
   if (!logLines.length) consoleEl.textContent = "Waiting for output…";
   if (full || nearBottom) consoleEl.scrollTop = consoleEl.scrollHeight;
 
+  // tqdm progress: shown, but not announced (it changes several times a second).
   progressEl.hidden = !progressText;
   if (progressText) {
     const match = progressText.match(/(\d+)%\|/);
@@ -244,9 +249,10 @@ function flushConsole(full = false) {
     const label = progressText.split("|")[0].replace(/\s*\d+%\s*$/, "").trim() || "Working";
     const counts = (progressText.match(/\|\s*([^[]+)\[/) || [])[1];
     clear(progressEl,
-      h("span", { class: "mono" }, label, counts && h("span", { class: "faint" }, `  ${counts.trim()}`)),
-      h("span", { class: "mono faint" }, pct != null ? `${pct}%` : ""),
-      h("div", { class: `progress-track${pct == null ? " indeterminate" : ""}` }, h("i", { style: { width: `${pct || 0}%` } })));
+      h("div", { class: "pz-progress-text es-num" },
+        h("span", null, label, counts && h("span", { class: "es-caption" }, `  ${counts.trim()}`)),
+        h("span", null, pct != null ? `${pct}%` : "")),
+      h("div", { class: "es-progress", "aria-hidden": "true" }, h("span", { style: { width: `${pct ?? 0}%` } })));
   }
 }
 
@@ -278,11 +284,11 @@ function errorCard(job) {
   const e = job.error;
   if (!e) return null;
   return card({
-    title: "Conversion failed", iconName: "alert", cls: "error-card",
-    body: h("div", { style: { display: "grid", gap: "10px" } },
-      h("div", { class: "error-title" }, `${e.type_name || "Error"}: ${e.message}`),
+    title: "Conversion failed", cls: "pz-panel--error",
+    body: h("div", { class: "pz-stack" },
+      callout("fail", `${e.type_name || "Error"}: ${e.message}`),
       e.hint && callout("info", "What to try", e.hint),
-      e.traceback && h("details", { class: "trace" }, h("summary", null, "Traceback"), h("pre", null, e.traceback))),
+      e.traceback && h("details", { class: "pz-details" }, h("summary", null, "Traceback"), h("pre", { class: "es-log", tabindex: "0" }, e.traceback))),
   });
 }
 
@@ -292,53 +298,63 @@ function paramsCard(job) {
     const v = p[key];
     if (key === "bf_disk_radius" && v == null) return "estimated";
     if (key === "centre_method") return p.do_recentering ? (v === "fit" ? "plane fit" : "global") : "—";
+    if (key === "backend") return v === "quantem" ? "Quantem" : "py4DSTEM";
     if (typeof v === "boolean") return v ? "on" : "off";
-    return String(v);
+    return v == null ? "—" : String(v);
   };
   return card({
-    title: "Parameters", iconName: "sliders",
-    actions: h("button", { class: "btn sm", onClick: () => copyText(pythonSnippet([job.file], p, job.output_dir), "Python call copied") },
-      icon("code", "sm"), "Copy as Python"),
-    body: h("div", { class: "kv" }, h("dl", { class: "kv-group", style: { margin: 0, gridColumn: "1 / -1" } },
-      h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", columnGap: "24px" } },
-        Object.entries(PARAM_LABELS).map(([key, [label, unit]]) => h("div", { class: "kv-row" },
-          h("dt", null, label), h("dd", null, value(key), unit && p[key] != null && h("span", { class: "unit" }, unit))))))),
+    title: "Parameters", quiet: true,
+    actions: button("Copy as Python", () => copyText(pythonSnippet([job.file], p, job.output_dir), "Python call copied"), { size: "sm", variant: "quiet" }),
+    body: h("ul", { class: "es-spec pz-spec-cols" },
+      Object.entries(PARAM_LABELS).filter(([key]) => key in p).map(([key, [label, unit]]) => h("li", null,
+        h("b", null, label), h("span", { class: "es-num" }, value(key), unit && p[key] != null ? ` ${unit}` : "")))),
   });
+}
+
+function label(text) {
+  return h("p", { class: "es-label" }, h("span", { class: "es-plus", "aria-hidden": "true" }, "+"), text);
 }
 
 function renderDetail(job) {
   if (!job) {
-    return h("div", { class: "run-detail" }, h("div", { class: "empty" }, h("div", { class: "empty-inner" },
-      icon("layers", "lg"),
-      h("h2", null, state.jobs.length ? "Select a run" : "No runs yet"),
-      h("p", null, "Conversions you queue from the Inspect view show up here with live progress, QC figures and results."))));
+    return h("div", { class: "pz-run-detail" }, h("div", { class: "pz-page pz-empty" },
+      label("Runs"),
+      h("h1", { class: "es-h1" }, state.jobs.length ? "Select a run." : "No runs yet."),
+      h("p", { class: "es-lede" }, "Conversions you queue from the Inspect view show up here with live progress, QC figures and results.")));
   }
   openStream(job);
   const actions = [
-    isActive(job) && h("button", { class: "btn sm danger", onClick: () => act(job, "cancel") }, icon("stop", "sm"), job.status === "queued" ? "Remove from queue" : "Cancel"),
-    !isActive(job) && h("button", { class: "btn sm", onClick: () => act(job, "retry") }, icon("retry", "sm"), "Run again"),
-    h("button", { class: "btn sm", onClick: () => focusFile(job.file) }, icon("search", "sm"), "Inspect file"),
-    !isActive(job) && h("button", { class: "icon-btn sm", title: "Remove from list", "aria-label": "Remove from list", onClick: () => act(job, "remove") }, icon("trash", "sm")),
+    isActive(job) && button(job.status === "queued" ? "Remove from queue" : "Cancel", () => act(job, "cancel"), { size: "sm" }),
+    job.status === "failed"
+      ? button("Edit and run again", () => editAndRerun(job), { size: "sm", variant: "dark" })
+      : !isActive(job) && button("Run again", () => act(job, "retry"), { size: "sm" }),
+    button("Inspect file", () => focusFile(job.file), { size: "sm" }),
+    !isActive(job) && button("Remove", () => act(job, "remove"), { size: "sm", variant: "quiet", ariaLabel: "Remove from list" }),
   ];
-  const badgeKind = { done: "ok", failed: "fail", running: "accent", cancelled: "", queued: "" }[job.status];
-  return h("div", { class: "run-detail" }, h("div", { class: "page" },
-    h("div", { class: "page-head" },
-      h("div", { class: "eyebrow" },
-        h("span", { class: `badge ${badgeKind}` }, job.status),
-        `Queued ${fmt.datetime(job.created)}`,
-        job.info && h("span", { class: "faint" }, `· ${job.info.engine || "py4DSTEM"} ${job.info.version || job.info.py4DSTEM}`)),
-      h("div", { class: "page-title-row" }, h("h1", { class: "page-title" }, job.name), h("div", { class: "card-actions" }, actions)),
-      h("div", { class: "path-row" },
-        icon("folder", "sm"),
-        h("span", { class: "mono", title: job.output_dir }, `‎${job.output_dir}`),
-        h("button", { class: "icon-btn sm", title: "Copy output folder", "aria-label": "Copy output folder", onClick: () => copyText(job.output_dir, "Path copied") }, icon("copy", "sm")),
-        h("button", { class: "icon-btn sm", title: "Reveal output folder", "aria-label": "Reveal output folder",
-          onClick: () => api.reveal(job.output_dir).catch((e) => toast(e.message, { kind: "fail" })) }, icon("reveal", "sm")))),
+  const engine = job.info && `${job.info.engine || "py4DSTEM"} ${job.info.version || job.info.py4DSTEM || ""}`.trim();
+  return h("div", { class: "pz-run-detail" }, h("div", { class: "pz-page" },
+    h("header", { class: "pz-page-head" },
+      h("div", { class: "pz-label-row" }, label("Run"), jobStatus(job)),
+      h("div", { class: "pz-title-row" }, h("h1", { class: "es-h1 pz-title" }, `${job.name}.`), h("div", { class: "pz-actions" }, actions)),
+      h("p", { class: "es-lede" }, [`Queued ${fmt.datetime(job.created)}`, engine, subtitle(job)].filter(Boolean).join(" · ")),
+      h("div", { class: "pz-path-row" },
+        pathText(job.output_dir),
+        button("Copy", () => copyText(job.output_dir, "Path copied"), { size: "sm", variant: "quiet", ariaLabel: "Copy output folder" }),
+        button("Reveal", () => api.reveal(job.output_dir).catch((e) => toast(e.message, { kind: "fail" })), { size: "sm", variant: "quiet", ariaLabel: "Reveal output folder" }))),
     errorCard(job),
-    h("div", { class: "grid-2" }, pipeline(job), results(job) || paramsCard(job)),
+    h("div", { class: "pz-grid-2" }, pipeline(job), results(job) || paramsCard(job)),
     figures(job),
     logCard(job),
     job.result && paramsCard(job)));
+}
+
+// A failed run usually needs a change (often the output folder): open its settings instead of
+// repeating them.
+function editAndRerun(job) {
+  focusFile(job.file);
+  loadSettings(job.params);
+  toast("This run's settings are loaded in Convert. Change the output folder or other settings, then convert.",
+    { timeout: 7000 });
 }
 
 async function act(job, action) {
@@ -352,9 +368,17 @@ async function act(job, action) {
   }
 }
 
+// Announce stage and status changes of the selected run (polite, once per change).
+function announce(job) {
+  if (!liveEl || !job) return;
+  const text = `${job.name}: ${JOB_STATUS[job.status]?.[1] || job.status}. ${subtitle(job)}`;
+  if (text !== lastAnnounced) { lastAnnounced = text; liveEl.textContent = text; }
+}
+
 // Re-rendering the whole view on every poll would reset scroll positions and the console, so the
 // detail is only rebuilt when something visible changed.
 let lastSignature = null;
+let awaitedJobId = null;
 function signature(job) {
   if (!job) return `none:${state.jobs.length}`;
   return JSON.stringify([job.id, job.status, job.stage, Object.keys(job.stages).length, job.figures.length,
@@ -365,33 +389,48 @@ function render(force = false) {
   if (state.view !== "runs") return;
   let job = state.jobs.find((j) => j.id === state.activeJobId);
   if (!job && state.jobs.length) {
+    // Show the newest run meanwhile, but keep a requested id (e.g. from #runs/<id>) that the job
+    // list hasn't caught up with yet; the next refresh selects it.
     job = state.jobs[0];
-    state.activeJobId = job.id;
+    if (state.activeJobId && state.activeJobId !== awaitedJobId) {
+      awaitedJobId = state.activeJobId;
+      refreshJobs();
+    } else {
+      state.activeJobId = job.id;  // unknown even after a refresh (e.g. a stale link): show the newest
+    }
   }
+  if (!liveEl) {
+    liveEl = h("div", { class: "es-sr-only", "aria-live": "polite", role: "status" });
+    root.before(liveEl);
+  }
+  announce(job);
+  const focusKey = root.contains(document.activeElement) ? document.activeElement.dataset.key : null;
   const list = renderList();
-  const existingList = root.querySelector(".runs-list");
-  const scroll = existingList?.querySelector(".runs-items")?.scrollTop || 0;
+  const existingList = root.querySelector(".pz-runs-list");
+  const scroll = existingList?.scrollTop || 0;
   const sig = signature(job);
-  const detailHost = root.querySelector(".run-detail");
+  const detailHost = root.querySelector(".pz-run-detail");
   if (!force && detailHost && sig === lastSignature) {
     existingList.replaceWith(list);
-    list.querySelector(".runs-items").scrollTop = scroll;
+    list.scrollTop = scroll;
+    if (focusKey) list.querySelector(`[data-key="${CSS.escape(focusKey)}"]`)?.focus();
     return;
   }
   const detailScroll = detailHost ? detailHost.scrollTop : 0;
   const sameJob = lastSignature && job && lastSignature.startsWith(`["${job.id}"`);
   lastSignature = sig;
   clear(root, list, renderDetail(job));
-  list.querySelector(".runs-items").scrollTop = scroll;
+  list.scrollTop = scroll;
   if (consoleEl) consoleEl.scrollTop = consoleEl.scrollHeight;
-  if (sameJob) root.querySelector(".run-detail").scrollTop = detailScroll;
+  if (sameJob) root.querySelector(".pz-run-detail").scrollTop = detailScroll;
+  if (focusKey) root.querySelector(`[data-key="${CSS.escape(focusKey)}"]`)?.focus();
 }
 
 function tick() {
   // Keep running stage timers moving without a full re-render.
   const job = state.jobs.find((j) => j.id === state.activeJobId);
   if (!job || job.status !== "running" || state.view !== "runs") return;
-  for (const el of root.querySelectorAll(".step-time[data-stage]")) {
+  for (const el of root.querySelectorAll(".pz-step-time[data-stage]")) {
     const timing = job.stages[el.dataset.stage];
     if (timing && timing.end == null) el.textContent = fmt.duration(now() - timing.start);
   }
@@ -403,7 +442,7 @@ export function initRuns() {
       const count = state.jobs.filter(isActive).length;
       const badge = document.getElementById("runsCount");
       badge.hidden = count === 0;
-      badge.textContent = String(count);
+      badge.textContent = count ? ` · ${count} active` : "";
       render();
     }
     if (keys.includes("activeJobId")) render(true);
@@ -411,3 +450,4 @@ export function initRuns() {
   });
   ticker = setInterval(tick, 500);
 }
+

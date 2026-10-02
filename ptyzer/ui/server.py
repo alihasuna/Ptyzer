@@ -11,6 +11,7 @@ Serves the single-page app from ./static and a small JSON API:
   GET  /api/hp/frame.png?path=&index=    one diffraction pattern (&scale=log|linear)
   GET  /api/hp/mean.png?path=            mean of a sample of diffraction patterns
   GET  /api/output.png?path=             a QC figure written by an earlier conversion
+  GET  /api/output_target?path=&backend=&output_dir=   where a conversion of that file would write
   GET  /api/jobs                         all jobs
   GET  /api/jobs/<id>/stream             job feed as server-sent events (log, stages, figures, result)
   GET  /api/jobs/<id>/figures/<n>        a figure produced by a job
@@ -19,12 +20,16 @@ Serves the single-page app from ./static and a small JSON API:
   POST /api/sample                       write a synthetic .hp dataset
   POST /api/reveal                       {"path": ...} show a file/folder in the OS file manager
 
-The server is meant to run on the loopback interface. Requests with a foreign Host header are
-rejected (DNS-rebinding protection) and state-changing requests must be JSON from the same origin.
+The server is meant to run on the loopback interface, or on a Unix socket behind
+jupyter-server-proxy (serve(unix_socket=...)). On loopback, requests with a foreign Host header are
+rejected (DNS-rebinding protection). State-changing requests must be JSON from the same origin;
+behind the proxy the origin is compared with X-Forwarded-Host. The page uses relative URLs only, so
+it works under the proxy's /user/<name>/<app>/ prefix.
 """
 import json
 import os
 import re
+import socketserver
 import string
 import subprocess
 import sys
@@ -38,7 +43,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from . import hpfile
-from .jobs import DEFAULT_PARAMS, JobManager
+from .jobs import DEFAULT_PARAMS, JobManager, output_target
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 CONTENT_TYPES = {
@@ -72,12 +77,13 @@ def _natural_key(name):
 
 
 class App:
-    def __init__(self, start_dir, loopback_only=True, verbose=False, quantem_python=None):
+    def __init__(self, start_dir, loopback_only=True, verbose=False, quantem_python=None, output_root=None):
         self.start_dir = os.path.abspath(os.path.expanduser(start_dir))
         self.loopback_only = loopback_only
         self.verbose = verbose
         from .backends import quantem_python as resolve_python
-        self.jobs = JobManager(quantem_python=resolve_python(quantem_python))
+        self.jobs = JobManager(quantem_python=resolve_python(quantem_python), output_root=output_root)
+        self.output_root = self.jobs.output_root
         self.sample_dir = os.path.join(tempfile.gettempdir(), "ptyzer-sample")
         self._env = None
         self._env_lock = threading.Lock()
@@ -97,7 +103,7 @@ class App:
                     "quantem": quantem_info,
                 }
                 self._env.update(start_dir=self.start_dir, sample_dir=self.sample_dir,
-                                 home=os.path.expanduser("~"), defaults=DEFAULT_PARAMS,
+                                 home=os.path.expanduser("~"), defaults=DEFAULT_PARAMS, output_root=self.output_root,
                                  os=os.name, sep=os.sep)
             return self._env
 
@@ -106,6 +112,9 @@ class App:
     def places(self):
         places = [{"label": "Home", "path": os.path.expanduser("~")},
                   {"label": "Launch folder", "path": self.start_dir}]
+        fir = os.path.expanduser("~/fir")
+        if os.path.isdir(fir):
+            places.append({"label": "Fir data", "path": fir})
         if os.path.isdir(self.sample_dir):
             places.append({"label": "Sample data", "path": self.sample_dir})
         if os.name == "nt":
@@ -211,6 +220,10 @@ def make_handler(app):
     class Handler(BaseHTTPRequestHandler):
         server_version = "PtyzerUI/1.0"
 
+        def address_string(self):
+            # Unix-socket peers have no (host, port) address.
+            return self.client_address[0] if isinstance(self.client_address, tuple) else "unix-socket"
+
         def log_message(self, fmt, *args):
             if app.verbose:
                 sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
@@ -257,7 +270,9 @@ def make_handler(app):
             origin = self.headers.get("Origin")
             if origin is None:
                 return True
-            return urlparse(origin).netloc == self.headers.get("Host")
+            # Behind jupyter-server-proxy the browser's host arrives as X-Forwarded-Host.
+            host = self.headers.get("X-Forwarded-Host", "").split(",")[0].strip() or self.headers.get("Host")
+            return urlparse(origin).netloc == host
 
         def _dispatch(self, routes):
             if not self._host_ok():
@@ -292,6 +307,7 @@ def make_handler(app):
                 (r"/api/hp/frame\.png", self.frame),
                 (r"/api/hp/mean\.png", self.mean),
                 (r"/api/output\.png", self.output_png),
+                (r"/api/output_target", self.target),
                 (r"/api/jobs", lambda q: self._json({"jobs": app.jobs.list()})),
                 (r"/api/jobs/([0-9a-f]+)", lambda q, jid: self._json(self._job(jid).to_json())),
                 (r"/api/jobs/([0-9a-f]+)/stream", self.stream),
@@ -330,7 +346,14 @@ def make_handler(app):
         # -- .hp inspection ---------------------------------------------------------------------
 
         def inspect(self, query):
-            self._json(hpfile.inspect_hp(self._file_param(query)))
+            self._json(hpfile.inspect_hp(self._file_param(query), output_root=app.output_root))
+
+        def target(self, query):
+            params = {k: query[k] for k in ("backend", "output_dir") if k in query}
+            try:
+                self._json(output_target(self._file_param(query), params, app.output_root))
+            except ValueError as exc:
+                raise HttpError(HTTPStatus.BAD_REQUEST, str(exc))
 
         def coords(self, query):
             self._send(HTTPStatus.OK, hpfile.coords_bytes(self._file_param(query)), "application/octet-stream")
@@ -452,10 +475,34 @@ def make_handler(app):
     return Handler
 
 
-def serve(host="127.0.0.1", port=8765, start_dir=None, verbose=False, quantem_python=None):
-    """Create the server (not yet serving). Port 0 picks a free port."""
+class ThreadingUnixHTTPServer(socketserver.ThreadingUnixStreamServer):
+    daemon_threads = True
+
+    def server_bind(self):
+        # Only this user may connect: a TCP port on a shared server is reachable by everyone.
+        old = os.umask(0o177)
+        try:
+            super().server_bind()
+        finally:
+            os.umask(old)
+        os.chmod(self.server_address, 0o600)
+
+
+def serve(host="127.0.0.1", port=8765, start_dir=None, verbose=False, quantem_python=None, unix_socket=None,
+          output_root=None):
+    """Create the server (not yet serving). Port 0 picks a free port; unix_socket listens on that
+    socket path instead of TCP (for jupyter-server-proxy's unix_socket option)."""
+    if unix_socket:
+        if os.path.exists(unix_socket):
+            os.unlink(unix_socket)  # stale socket from an earlier run
+        # The socket's file permissions control access, and the proxy forwards the hub's Host header.
+        app = App(start_dir or os.getcwd(), loopback_only=False, verbose=verbose, quantem_python=quantem_python,
+                  output_root=output_root)
+        httpd = ThreadingUnixHTTPServer(unix_socket, make_handler(app))
+        return httpd, app
     loopback_only = host in LOOPBACK_NAMES
-    app = App(start_dir or os.getcwd(), loopback_only=loopback_only, verbose=verbose, quantem_python=quantem_python)
+    app = App(start_dir or os.getcwd(), loopback_only=loopback_only, verbose=verbose, quantem_python=quantem_python,
+              output_root=output_root)
     httpd = ThreadingHTTPServer((host, port), make_handler(app))
     httpd.daemon_threads = True
     return httpd, app

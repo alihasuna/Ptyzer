@@ -26,9 +26,8 @@ Layout of this module:
 
 @author: Arthur Blackburn
 """
-import py4DSTEM
-from py4DSTEM import show
-from py4DSTEM.process.phase.utils import AffineTransform
+# py4DSTEM is imported inside the functions that use it, so the metadata and plotting helpers
+# (coordinate check, overview, acquisition summary) also work without it, e.g. for the Quantem engine.
 import h5py
 import numpy as np
 import json
@@ -554,6 +553,8 @@ def plot_diffraction_and_virtual_images(datacube, loadupname, bf_disk_radius, sa
 
     save_path : if given, the figure is also saved to this path (e.g. a .png file).
     """
+    from py4DSTEM import show
+
     fig, ((ax_df, ax_bf), (ax_mean, ax_max)) = plt.subplots(2, 2, figsize=(10, 10))
 
     num_Qy, num_Qx = datacube.shape[2:]
@@ -633,6 +634,8 @@ def _plot_bf_shifts_on_axis(parallax, ax, rotated=False, plot_arrow_freq=2, scal
     show_shifts() always opens its own new figure and has no way to draw into
     an existing one (no `figax`/`ax` argument).
     """
+    from py4DSTEM.process.phase.utils import AffineTransform
+
     xp = parallax._xp
     asnumpy = parallax._asnumpy
     color = (1, 0, 0, 1)
@@ -728,24 +731,48 @@ def fit_parallax_aberrations(parallax, max_radial_order=6, max_angular_order=4, 
     storing the Angstrom-scaled shifts (_xy_shifts_Ang) that _plot_bf_shifts_on_axis and
     _measured_shift_maps use; they are restored here exactly as 0.14.14 computed them.
 
+    With force_transpose=True, py4DSTEM 0.14.14 and 0.14.18 build the refined fit's aberration
+    basis with the reported rotation, but the affine (polar decomposition) stage that reports it
+    transposes the rotation matrix, so in the transposed frame the basis needs the opposite angle.
+    The refined C1 then comes out scaled by cos(2 * rotation) (half the defocus at 30 degrees;
+    tests/test_ground_truth.py). Workaround: fit once to get the rotation and the affine estimates,
+    refit with the rotation forced to its negative so the refined basis is right, then restore the
+    reported rotation and affine estimates (the forced pass gets those wrong instead).
+
     Returns the fitted parallax.
     """
     params = inspect.signature(parallax.aberration_fit).parameters
-    if 'fit_BF_shifts' in params:  # py4DSTEM <= 0.14.14
-        parallax = parallax.aberration_fit(
-            fit_BF_shifts=True,
-            fit_aberrations_max_radial_order=max_radial_order,
-            fit_aberrations_max_angular_order=max_angular_order,
-            force_transpose=force_transpose,
-            plot_BF_shifts_comparison=False,
-        )
-    else:
+    old_api = 'fit_BF_shifts' in params  # py4DSTEM <= 0.14.14
+
+    def fit(**extra):
+        if old_api:
+            return parallax.aberration_fit(
+                fit_BF_shifts=True,
+                fit_aberrations_max_radial_order=max_radial_order,
+                fit_aberrations_max_angular_order=max_angular_order,
+                force_transpose=force_transpose,
+                plot_BF_shifts_comparison=False,
+                **extra,
+            )
         parallax.aberration_fit(
             max_radial_order=max_radial_order,
             max_angular_order=max_angular_order,
             force_transpose=force_transpose,
             plot_BF_shifts_comparison=False,
+            **extra,
         )
+        return parallax
+
+    parallax = fit()
+    if force_transpose and abs(np.sin(parallax.rotation_Q_to_R_rads)) > 1e-3:
+        affine = {name: getattr(parallax, name) for name in (
+            'rotation_Q_to_R_rads', 'aberrations_C1', 'aberrations_C12a', 'aberrations_C12b',  # 0.14.18
+            'aberration_C1', 'aberration_A1x', 'aberration_A1y',                               # 0.14.14
+        ) if hasattr(parallax, name)}
+        rotation_name = 'force_rotation_deg' if old_api else 'force_rotation_angle_deg'
+        parallax = fit(**{rotation_name: -np.rad2deg(affine['rotation_Q_to_R_rads'])})
+        for name, value in affine.items():
+            setattr(parallax, name, value)
     if not hasattr(parallax, '_xy_shifts_Ang'):
         xp = parallax._xp
         shifts = xp.flip(parallax._xy_shifts, axis=1) if parallax.transpose else parallax._xy_shifts
@@ -771,9 +798,8 @@ def parallax_affine_defocus_Ang(parallax):
     """
     Return the defocus (Angstroms) from aberration_fit()'s initial affine (polar decomposition)
     estimate, which the refined fit starts from (aberration_C1 in py4DSTEM <= 0.14.14,
-    aberrations_C1 in 0.14.18). The two should agree. With force_transpose=True and a non-zero
-    rotation, the refined C1 in both versions comes out scaled by cos(2 * rotation) on synthetic
-    data with a known answer, while this estimate stays correct, so a disagreement flags that case.
+    aberrations_C1 in 0.14.18). The two should agree; a disagreement flags a fit to check (it is
+    how the force_transpose rotation bug worked around in fit_parallax_aberrations was found).
     """
     value = getattr(parallax, 'aberrations_C1', getattr(parallax, 'aberration_C1', None))
     return None if value is None else float(value)
@@ -1073,6 +1099,8 @@ def azohp_to_py4d(loadupname, savepathname=None,
 
     Returns (datacube, parallax).
     """
+    import py4DSTEM
+
     # %%
     if savepathname is None:
         savepathname = os.path.join(os.path.dirname(loadupname), 'ReformattedForPy4DSTEM')
@@ -1339,6 +1367,7 @@ if __name__ == "__main__":
     """
 
     # %%
+    import py4DSTEM
     py4DSTEM.__version__
 
     base_dir = r"H:\Arthur\2026_transfer" 

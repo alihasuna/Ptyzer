@@ -48,6 +48,54 @@ DEFAULT_PARAMS = {
 }
 
 
+DEFAULT_OUTPUT_ROOT = "~/ptyzer-output"
+
+
+def engine_dirname(backend):
+    return "ReformattedForQuantem" if backend == "quantem" else OUTPUT_DIRNAME
+
+
+def nearest_existing(path):
+    """The path itself if it exists, else its nearest existing ancestor."""
+    path = os.path.abspath(path)
+    while not os.path.exists(path):
+        parent = os.path.dirname(path)
+        if parent == path:
+            break
+        path = parent
+    return path
+
+
+def is_writable(path):
+    """Whether `path` exists as a writable folder or could be created (checked on its nearest existing
+    ancestor). os.access reports a read-only mount (e.g. sshfs) as not writable."""
+    existing = nearest_existing(path)
+    return os.path.isdir(existing) and os.access(existing, os.W_OK | os.X_OK)
+
+
+def output_target(file, params, output_root=DEFAULT_OUTPUT_ROOT):
+    """
+    Folder a conversion of `file` writes into (before any per-run subfolder):
+      - params['output_dir'] when set;
+      - otherwise ReformattedFor<engine>/ next to the file, if that can be written;
+      - otherwise <output_root>/<source folder name>/ReformattedFor<engine>/ (the fallback for
+        read-only data, e.g. a read-only project mount).
+    Returns {"dir", "writable", "fallback", "source_dir"}.
+    """
+    params = normalize_params(params)
+    source_dir = os.path.dirname(os.path.abspath(file))
+    if params["output_dir"]:
+        d = os.path.abspath(os.path.expanduser(params["output_dir"]))
+        return {"dir": d, "writable": is_writable(d), "fallback": False, "source_dir": source_dir}
+    sub = engine_dirname(params["backend"])
+    preferred = os.path.join(source_dir, sub)
+    if is_writable(preferred):
+        return {"dir": preferred, "writable": True, "fallback": False, "source_dir": source_dir}
+    root = os.path.abspath(os.path.expanduser(output_root or DEFAULT_OUTPUT_ROOT))
+    fallback = os.path.join(root, os.path.basename(source_dir) or "root", sub)
+    return {"dir": fallback, "writable": is_writable(fallback), "fallback": True, "source_dir": source_dir}
+
+
 def normalize_params(raw):
     """Validate and coerce UI params; raises ValueError with a readable message."""
     p = dict(DEFAULT_PARAMS)
@@ -168,8 +216,9 @@ class Job:
 
 
 class JobManager:
-    def __init__(self, python=None, quantem_python=None):
+    def __init__(self, python=None, quantem_python=None, output_root=None):
         self.python = python or sys.executable
+        self.output_root = os.path.abspath(os.path.expanduser(output_root or DEFAULT_OUTPUT_ROOT))
         self.quantem_python = quantem_python or self.python
         self.quantem_available = False
         self.jobs = {}
@@ -198,6 +247,10 @@ class JobManager:
         for file in files:
             if not os.path.isfile(file):
                 raise ValueError(f"Not a file: {file}")
+            # Refuse now rather than failing after the job is queued.
+            target = output_target(file, params, self.output_root)
+            if not target["writable"]:
+                raise ValueError(f"Output folder isn't writable: {target['dir']}. Choose another output folder.")
         stamp = datetime.datetime.now()
         created = []
         with self._lock:
@@ -244,9 +297,7 @@ class JobManager:
     # -- internals --------------------------------------------------------------------------
 
     def _output_dir(self, file, params, stamp):
-        root = "ReformattedForQuantem" if params["backend"] == "quantem" else OUTPUT_DIRNAME
-        base = params["output_dir"] or os.path.join(os.path.dirname(os.path.abspath(file)), root)
-        base = os.path.abspath(os.path.expanduser(base))
+        base = output_target(file, params, self.output_root)["dir"]
         if not params["per_run_folder"]:
             return base
         stem = os.path.splitext(os.path.basename(file))[0]

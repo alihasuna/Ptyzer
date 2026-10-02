@@ -1,7 +1,7 @@
 // Sidebar file browser: navigate folders, focus a .hp file for inspection, tick files for batch runs.
 
 import { api } from "./api.js";
-import { clear, fmt, h, icon, toast } from "./dom.js";
+import { button, clear, fmt, h, toast } from "./dom.js";
 import { state, storage, subscribe, update } from "./state.js";
 
 const root = document.getElementById("sidebar");
@@ -29,7 +29,6 @@ export async function navigate(path) {
 export function focusFile(path) {
   storage.set("focused", path);
   update({ focused: path, view: "inspect" });
-  document.getElementById("app").classList.remove("drawer-open");
 }
 
 export async function generateSample() {
@@ -50,86 +49,82 @@ function toggleSelected(path) {
   update({ selected });
 }
 
-function placeIcon(place) {
-  if (place.label === "Home") return "home";
-  if (place.label === "Sample data") return "sparkle";
-  if (/^[A-Z]:\\$/.test(place.label) || place.label === "/" || place.label === "Volumes") return "drive";
-  return "folder";
-}
-
 function fileRow(entry) {
   if (entry.kind === "dir") {
-    return h("button", { class: "file-row dir", title: entry.name, onClick: () => navigate(entry.path) },
-      icon("folder"), h("span", { class: "file-name" }, entry.name), icon("chevronRight", "sm"));
+    return h("li", { class: "pz-file pz-file--dir" },
+      h("button", { type: "button", class: "pz-file-open", title: entry.path, onClick: () => navigate(entry.path) },
+        h("span", { class: "pz-file-name" }, `${entry.name}/`),
+        h("span", { class: "es-sr-only" }, "folder")));
   }
-  const selected = state.selected.has(entry.path);
-  const row = h("div", {
-    class: "file-row", role: "button", tabindex: "0", title: entry.path,
-    "aria-current": String(state.focused === entry.path),
-    onClick: () => focusFile(entry.path),
-    onKeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); focusFile(entry.path); } },
-  },
-    h("label", { class: "file-check", onClick: (e) => e.stopPropagation() },
-      h("input", {
-        type: "checkbox", class: "checkbox", checked: selected, "aria-label": `Select ${entry.name} for batch conversion`,
-        onChange: () => toggleSelected(entry.path),
-      })),
-    icon("dataset"),
-    h("span", { class: "file-name" }, entry.name),
-    h("span", { class: "file-meta" },
-      entry.converted && h("span", { class: "badge ok", title: "A saved conversion already exists for this file" }, "converted"),
-      fmt.bytes(entry.size)));
-  return row;
+  const current = state.focused === entry.path;
+  return h("li", { class: `pz-file${current ? " is-current" : ""}` },
+    h("input", {
+      type: "checkbox", class: "pz-file-check", checked: state.selected.has(entry.path), dataset: { key: `check:${entry.path}` },
+      "aria-label": `Select ${entry.name} for batch conversion`, onChange: () => toggleSelected(entry.path),
+    }),
+    h("button", {
+      type: "button", class: "pz-file-open", title: entry.path, "aria-current": current ? "true" : null, dataset: { key: `open:${entry.path}` },
+      onClick: () => focusFile(entry.path),
+    },
+      h("span", { class: "pz-file-name" }, entry.name),
+      h("span", { class: "pz-file-meta es-num" },
+        entry.converted && h("span", { class: "pz-tag" }, "Converted"),
+        fmt.bytes(entry.size))));
 }
 
 function render() {
-  const head = h("div", { class: "sidebar-head" },
-    h("div", { class: "sidebar-row" },
-      h("span", { class: "sidebar-title" }, "Files"),
-      h("button", { class: "icon-btn sm", title: "Parent folder", "aria-label": "Parent folder",
-        disabled: !listing || !listing.parent, onClick: () => listing && navigate(listing.parent) }, icon("up")),
-      h("button", { class: "icon-btn sm", title: "Refresh", "aria-label": "Refresh",
-        onClick: () => navigate(listing ? listing.path : null) }, icon("refresh"))),
-    listing && h("nav", { class: "crumbs", "aria-label": "Current folder" },
-      listing.crumbs.map((c, i) => [
-        i > 0 && !/[\\/]$/.test(listing.crumbs[i - 1].name) && h("span", { class: "crumb-sep" }, icon("chevronRight", "sm")),
-        h("button", { class: "crumb", title: c.path, onClick: () => navigate(c.path) }, c.name),
-      ])),
-    h("div", { class: "input-wrap" },
-      icon("search", "sm"),
+  // Re-rendering replaces the rows; keep keyboard focus on the same control.
+  const focusKey = root.contains(document.activeElement) ? document.activeElement.dataset.key : null;
+  const head = h("div", { class: "pz-sidebar-head" },
+    h("div", { class: "es-section-head pz-sidebar-title" },
+      h("h2", { class: "es-h3" }, "Files"),
+      h("div", { class: "pz-actions" },
+        button("Up", () => listing && navigate(listing.parent), {
+          size: "sm", variant: "quiet", disabled: !listing || !listing.parent, ariaLabel: "Up to parent folder" }),
+        button("Refresh", () => navigate(listing ? listing.path : null), { size: "sm", variant: "quiet" }))),
+    listing && h("nav", { class: "pz-crumbs", "aria-label": "Current folder" },
+      h("ol", null, listing.crumbs.map((c, i) => h("li", null,
+        h("button", { type: "button", class: "pz-crumb", title: c.path, "aria-current": i === listing.crumbs.length - 1 ? "location" : null,
+          onClick: () => navigate(c.path) }, c.name))))),
+    h("div", { class: "es-field" },
+      h("label", { for: "fileFilter" }, "Filter or go to folder"),
       h("input", {
-        class: "input", type: "search", placeholder: "Filter, or paste a folder path…", value: filter,
-        "aria-label": "Filter files or go to a folder",
+        id: "fileFilter", class: "es-input", type: "search", placeholder: "Name, or a path and Enter", value: filter,
+        autocomplete: "off",
         onInput: (e) => { filter = e.target.value; renderList(); },
         onKeydown: (e) => {
           const value = e.target.value.trim();
           if (e.key === "Enter" && /^([\\/~]|[A-Za-z]:)/.test(value)) navigate(value);
         },
       })),
-    listing && h("div", { class: "places" },
-      listing.places.map((p) => h("button", { class: "place", title: p.path, onClick: () => navigate(p.path) },
-        icon(placeIcon(p), "sm"), p.label))));
+    listing && h("ul", { class: "pz-places", "aria-label": "Places" },
+      listing.places.map((p) => h("li", null,
+        button(p.label, () => navigate(p.path), { size: "sm", variant: "quiet", title: p.path })))));
 
-  const list = h("div", { class: "file-list", id: "fileList" });
+  const list = h("ul", { class: "pz-file-list", id: "fileList", "aria-label": "Folder contents", "aria-busy": loading ? "true" : null });
   const selectedCount = state.selected.size;
-  const foot = h("div", { class: "sidebar-foot" },
-    selectedCount > 0 && h("div", { class: "selection-bar" },
-      icon("layers", "sm"), `${selectedCount} selected for batch`,
-      h("button", { class: "btn sm ghost", onClick: () => update({ selected: new Set() }) }, "Clear")),
-    h("button", { class: "btn block", onClick: generateSample }, icon("sparkle"), "Generate sample dataset"));
+  const foot = h("div", { class: "pz-sidebar-foot" },
+    selectedCount > 0 && h("div", { class: "pz-selection", role: "status" },
+      h("span", { class: "es-num" }, `${selectedCount} selected for batch`),
+      button("Clear", () => update({ selected: new Set() }), { size: "sm", variant: "quiet" })),
+    button("Generate sample dataset", generateSample, { class: "es-btn pz-block" }));
 
   clear(root, head, list, foot);
-  const crumbs = root.querySelector(".crumbs");
+  const crumbs = root.querySelector(".pz-crumbs");
   if (crumbs) crumbs.scrollLeft = crumbs.scrollWidth;
   renderList();
+  if (focusKey) root.querySelector(`[data-key="${CSS.escape(focusKey)}"]`)?.focus();
+}
+
+function note(text) {
+  return h("li", { class: "pz-list-note es-caption" }, text);
 }
 
 function renderList() {
   const list = root.querySelector("#fileList");
   if (!list) return;
-  if (loading && !listing) return clear(list, ...[0, 1, 2, 3, 4].map(() =>
-    h("div", { class: "skeleton", style: { height: "28px", margin: "6px 8px" } })));
-  if (error) return clear(list, h("div", { class: "list-note" }, icon("alert"), h("div", null, error)));
+  if (loading && !listing) return clear(list, note("Loading folder…"));
+  if (error) return clear(list, h("li", { class: "pz-list-note" }, h("span", { class: "es-status es-status--error" }, "Error"), " ", error));
   if (!listing) return clear(list);
 
   const needle = filter.trim().toLowerCase();
@@ -137,10 +132,9 @@ function renderList() {
   const entries = listing.entries.filter((e) => isPath || !needle || e.name.toLowerCase().includes(needle));
   const files = entries.filter((e) => e.kind === "hp");
   clear(list, entries.map(fileRow));
-  if (isPath) list.prepend(h("div", { class: "list-note" }, "Press Enter to open this folder"));
+  if (isPath) list.prepend(note("Press Enter to open this folder"));
   else if (!files.length) {
-    list.append(h("div", { class: "list-note" },
-      needle ? "No matching files" : listing.entries.length ? "No .hp files in this folder" : "This folder is empty"));
+    list.append(note(needle ? "No matching files" : listing.entries.length ? "No .hp files in this folder" : "This folder is empty"));
   }
 }
 

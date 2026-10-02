@@ -3,13 +3,14 @@
 import { api } from "./api.js";
 import { initBrowser } from "./browser.js";
 import { initConvert } from "./convert.js";
-import { callout, clear, copyText, h, icon } from "./dom.js";
+import { button, callout, clear, copyText, h, pathText } from "./dom.js";
 import { initInspect } from "./inspect.js";
 import { refreshJobs } from "./jobstore.js";
 import { initRuns } from "./runs.js";
 import { state, storage, subscribe, update } from "./state.js";
 
 const app = document.getElementById("app");
+const THEME_KEY = "es-theme"; // shared with the ElectroSim website and JupyterHub
 
 // -- theme -------------------------------------------------------------------------------------
 
@@ -20,11 +21,15 @@ function effectiveTheme() {
 
 function initTheme() {
   const button = document.getElementById("themeToggle");
-  const paint = () => clear(button, icon(effectiveTheme() === "dark" ? "sun" : "moon"));
+  const paint = () => {
+    const next = effectiveTheme() === "dark" ? "light" : "dark";
+    button.querySelector(".pz-theme-text").textContent = next === "dark" ? "Dark" : "Light";
+    button.setAttribute("aria-label", `Switch to ${next} theme`);
+  };
   button.addEventListener("click", () => {
     const next = effectiveTheme() === "dark" ? "light" : "dark";
     document.documentElement.dataset.theme = next;
-    storage.set("theme", next);
+    try { localStorage.setItem(THEME_KEY, next); } catch { /* storage unavailable */ }
     paint();
     // Canvas viewers read CSS variables when drawing.
     window.dispatchEvent(new Event("resize"));
@@ -39,9 +44,11 @@ function initTheme() {
 function applyView() {
   document.getElementById("viewInspect").hidden = state.view !== "inspect";
   document.getElementById("viewRuns").hidden = state.view !== "runs";
-  for (const tab of document.querySelectorAll(".tab")) {
-    tab.setAttribute("aria-selected", String(tab.dataset.view === state.view));
+  for (const link of document.querySelectorAll(".es-nav [data-view]")) {
+    if (link.dataset.view === state.view) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
   }
+  document.title = `${state.view === "runs" ? "Runs" : "Inspect"} · Ptyzer · ElectroSim`;
   const hash = state.view === "runs" ? (state.activeJobId ? `#runs/${state.activeJobId}` : "#runs") : "#inspect";
   if (location.hash !== hash) history.replaceState(null, "", hash);
 }
@@ -52,67 +59,90 @@ function routeFromHash() {
   else update({ view: "inspect" });
 }
 
-function initTabs() {
-  for (const tab of document.querySelectorAll(".tab")) {
-    tab.addEventListener("click", () => update({ view: tab.dataset.view }));
-  }
+function initNav() {
   subscribe((keys) => {
     if (keys.includes("view") || keys.includes("activeJobId")) applyView();
   });
   window.addEventListener("hashchange", routeFromHash);
 }
 
+function setDrawer(open) {
+  app.classList.toggle("drawer-open", open);
+  document.getElementById("drawerToggle").setAttribute("aria-expanded", String(open));
+  if (open) document.getElementById("sidebar").querySelector("button, input")?.focus();
+}
+
 function initDrawer() {
   const toggle = document.getElementById("drawerToggle");
-  toggle.append(icon("menu"));
-  toggle.addEventListener("click", () => app.classList.toggle("drawer-open"));
-  document.getElementById("drawerScrim").addEventListener("click", () => app.classList.remove("drawer-open"));
+  toggle.addEventListener("click", () => setDrawer(!app.classList.contains("drawer-open")));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && app.classList.contains("drawer-open")) { setDrawer(false); toggle.focus(); }
+  });
+  subscribe((keys) => { if (keys.includes("focused")) setDrawer(false); });
 }
 
 // -- environment -------------------------------------------------------------------------------
 
 function renderEnv(err) {
-  const pill = document.getElementById("envPill");
+  const statusEl = document.getElementById("envStatus");
+  const textEl = document.getElementById("envText");
   const pop = document.getElementById("envPopover");
   const env = state.env;
-  let dot = "pulse", text = "Checking environment…";
-  if (err) { dot = "fail"; text = "Server unreachable"; }
+  let kind = "idle", word = "Checking", text = "";
+  if (err) { kind = "error"; word = "Offline"; text = "Server unreachable"; }
   else if (env) {
     const fails = env.checks.filter((c) => c.status === "fail").length;
     const warns = env.checks.filter((c) => c.status === "warn").length;
-    const versions = `py4DSTEM ${env.packages.py4DSTEM || "missing"} · numpy ${env.packages.numpy || "?"}`;
-    if (!env.converter_ok) { dot = env.backends?.quantem?.available ? "ok" : "fail"; text = env.backends?.quantem?.available ? "Quantem available · py4DSTEM unavailable" : "Converter unavailable"; }
-    else if (fails || warns) { dot = fails ? "fail" : "warn"; text = `${versions} · ${fails + warns} issue${fails + warns === 1 ? "" : "s"}`; }
-    else { dot = "ok"; text = versions; }
+    const versions = `py4DSTEM ${env.packages.py4DSTEM || "missing"}`;
+    if (!env.converter_ok) {
+      const q = env.backends?.quantem?.available;
+      kind = q ? "warn" : "error"; word = q ? "Partial" : "Error"; text = q ? "Quantem only" : "Converter unavailable";
+    } else if (fails || warns) {
+      kind = fails ? "error" : "warn"; word = `${fails + warns} issue${fails + warns === 1 ? "" : "s"}`; text = versions;
+    } else { kind = "ok"; word = "Ready"; text = versions; }
   }
-  clear(pill, h("span", { class: `dot ${dot}` }), h("span", { class: "env-text" }, text));
+  statusEl.className = `es-status es-status--${kind}`;
+  statusEl.textContent = word;
+  textEl.textContent = text;
 
-  if (!env) return clear(pop, err ? callout("fail", "Can't reach the Ptyzer server", err.message) : h("div", { class: "faint" }, "Loading…"));
+  if (!env) {
+    return clear(pop, err ? callout("fail", "Can't reach the Ptyzer server", err.message) : h("p", { class: "es-caption" }, "Loading…"));
+  }
+  const q = env.backends?.quantem;
   clear(pop,
-    h("h3", null, "Python environment"),
-    h("div", { class: "path-row" },
-      h("span", { class: "badge" }, `Python ${env.python}`),
-      h("span", { class: "mono", title: env.executable }, `‎${env.executable}`),
-      h("button", { class: "icon-btn sm", "aria-label": "Copy interpreter path", onClick: () => copyText(env.executable) }, icon("copy", "sm"))),
-    h("dl", { class: "kv-group", style: { margin: 0 } }, Object.entries(env.packages).map(([name, version]) =>
-      h("div", { class: "kv-row" }, h("dt", null, name), h("dd", null, version || h("span", { style: { color: "var(--fail)" } }, "not installed"))))),
+    h("div", { class: "es-section-head" }, h("h2", { class: "es-h3" }, "Python environment"),
+      button("Close", () => setPopover(false), { size: "sm", variant: "quiet" })),
+    h("div", { class: "pz-path-row" },
+      h("span", { class: "es-label" }, `Python ${env.python}`),
+      pathText(env.executable),
+      button("Copy", () => copyText(env.executable), { size: "sm", variant: "quiet", ariaLabel: "Copy interpreter path" })),
+    h("ul", { class: "es-spec pz-spec" }, Object.entries(env.packages).map(([name, version]) =>
+      h("li", null, h("b", null, name), h("span", { class: "es-num" }, version || "not installed")))),
     !env.converter_ok && callout("fail", "ptyzer.io.azohp_to_py4d could not be imported", env.converter_error),
     env.checks.map((c) => callout(c.status, c.title, c.detail)),
     env.converter_ok && !env.checks.length && callout("info", "All compatibility checks passed",
       "The py4DSTEM code paths Ptyzer relies on (Parallax, aberration fitting, figure hooks) match what it expects."),
-    env.backends?.quantem && h("div", { class: "hint" }, env.backends.quantem.available
-      ? `Quantem ${env.backends.quantem.version} · numpy ${env.backends.quantem.numpy} · experimental`
-      : `Quantem unavailable: ${env.backends.quantem.error || "not installed"}`),
-    h("div", { class: "hint" }, "Each engine runs in a separate worker using its configured Python environment."));
+    q && h("p", { class: "es-help" }, q.available
+      ? `Quantem ${q.version} · numpy ${q.numpy} · experimental`
+      : `Quantem unavailable: ${q.error || "not installed"}`),
+    h("p", { class: "es-help" }, "Each engine runs in a separate worker using its configured Python environment."));
+}
+
+function setPopover(open) {
+  const pill = document.getElementById("envPill");
+  const pop = document.getElementById("envPopover");
+  pop.hidden = !open;
+  pill.setAttribute("aria-expanded", String(open));
+  if (open) pop.querySelector("button")?.focus();
+  else if (pop.contains(document.activeElement)) pill.focus();
 }
 
 function initEnvPopover() {
   const pill = document.getElementById("envPill");
   const pop = document.getElementById("envPopover");
-  const setOpen = (open) => { pop.hidden = !open; pill.setAttribute("aria-expanded", String(open)); };
-  pill.addEventListener("click", (e) => { e.stopPropagation(); setOpen(pop.hidden); });
-  document.addEventListener("click", (e) => { if (!pop.hidden && !pop.contains(e.target)) setOpen(false); });
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") setOpen(false); });
+  pill.addEventListener("click", (e) => { e.stopPropagation(); setPopover(pop.hidden); });
+  document.addEventListener("click", (e) => { if (!pop.hidden && !pop.contains(e.target)) setPopover(false); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !pop.hidden) setPopover(false); });
 }
 
 async function loadEnv() {
@@ -129,7 +159,7 @@ async function loadEnv() {
 // -- boot --------------------------------------------------------------------------------------
 
 initTheme();
-initTabs();
+initNav();
 initDrawer();
 initEnvPopover();
 initConvert();
@@ -143,3 +173,4 @@ routeFromHash();
 applyView();
 loadEnv();
 refreshJobs();
+

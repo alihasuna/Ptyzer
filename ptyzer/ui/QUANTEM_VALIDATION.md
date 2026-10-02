@@ -22,22 +22,28 @@ Defocus in nm (truth +5.0 unless noted), rotation in degrees.
 
 | Case | py4DSTEM C1 | py4DSTEM rotation | Quantem C10 | Quantem rotation |
 | --- | --- | --- | --- | --- |
-| No mirror, 0° | +4.936 | +0.02 | +5.056 | +1.89 |
-| Defocus −5 nm | −4.936 | +0.03 | −5.056 | +1.90 |
-| No mirror, 30° | +4.934 | +30.03 | +5.055 | +31.90 |
-| Mirror, transpose on, 0° | +4.934 | +0.02 | +5.054 | +1.89 |
-| Mirror, transpose on, 30° | **+2.467** | +30.01 | +5.056 | +31.88 |
-| Mirror, transpose off, 0° | C1 ≈ 0, C12 = 4.934 | +89.98 | **−5.054** | +88.11 |
+| No mirror, 0° | +4.936 | +0.02 | +5.039 | +2.08 |
+| Defocus −5 nm | −4.936 | +0.03 | −5.057 | +1.91 |
+| No mirror, 30° | +4.934 | +30.03 | +5.020 | +32.27 |
+| Mirror, transpose on, 0° | +4.934 | +0.02 | +5.055 | +1.89 |
+| Mirror, transpose on, 30° | +4.937 (was +2.467 before the workaround) | +30.01 | +5.021 | +32.26 |
+| Mirror, transpose off, 0° | C1 ≈ 0, C12 = 4.934 | +89.98 | **−5.055** | +88.11 |
 
 - Both engines report C1/C10 with the same sign as the input and the same rotation sense.
-- py4DSTEM's C1 is 1.3 % low and Quantem's C10 1.1 % high. Quantem's rotation carries an
-  unexplained +1.9° offset.
-- **py4DSTEM, mirror and rotation:** the refined C1 is scaled by cos(2 × rotation) in both
-  0.14.14 and 0.14.18, while its initial affine estimate (`aberrations_C1`) is correct. Forcing
-  the rotation to the negated angle restores the right C1, which points to a rotation-sign
-  inconsistency under `force_transpose` in the refined fit. The converter now prints a warning
-  and the UI shows one when the two estimates disagree by more than 5 %. Not yet reported
-  upstream.
+- py4DSTEM's C1 is 1.3 % low; Quantem's C10 is within 1.1 %. Quantem's rotation carries an
+  unexplained +1.9° to +2.3° offset and up to 0.05 nm of spurious |C12|.
+- Quantem's cross-correlation runs with `regularize_shifts=False`, like the converter's py4DSTEM
+  call, so the parallax summary shows the measured shifts (with regularization the shifts equal the
+  fitted model and the residual panel is empty). Regularized, C10 was 1.1 % high and the rotation
+  offset +1.9°.
+- **py4DSTEM, mirror and rotation (fixed in Ptyzer):** in both 0.14.14 and 0.14.18 the refined
+  fit builds its aberration basis with the reported rotation, but under `force_transpose` the
+  affine stage that reports it transposes the rotation matrix, so the basis needs the opposite
+  angle. The refined C1 came out scaled by cos(2 × rotation) while the affine estimate
+  (`aberrations_C1`) was right. `fit_parallax_aberrations` now refits with the rotation forced to
+  its negative and restores the reported rotation and affine estimates; the converter and UI still
+  warn if the refined and affine defocus disagree by more than 5 %. The one-line upstream fix is
+  to negate the basis rotation when transposed; not yet reported to py4DSTEM.
 - **Mirror detection:** neither engine can tell from one dataset. With the wrong setting,
   py4DSTEM reads the defocus as astigmatism, Quantem as a sign-flipped defocus about 90° out in
   rotation.

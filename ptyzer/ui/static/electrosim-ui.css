@@ -1,0 +1,160 @@
+/* ElectroSim UI kit: the website and JupyterHub design system for application UIs.
+   Source of truth: electrosim-hub/site/assets/site.css (website) and
+   theme/templates/page.html (hub). Copy this file into the app; no fonts, CDN or
+   build step needed. Light and dark follow the system; an app can force one with
+   <html data-theme="light|dark">. Every text colour pair below meets WCAG AA.
+
+   Classes are prefixed es- so they don't collide with the app's own. */
+
+/* ---------- tokens ---------- */
+:root {
+  --es-bg: #fcfcfc;          /* page */
+  --es-panel: #e4e5e3;       /* panels, label pills */
+  --es-panel-2: #efefed;     /* quieter surfaces, tables, inputs */
+  --es-text: #262626;        /* ink: 14.7:1 on bg */
+  --es-muted: #5c5f5a;       /* secondary text: 6.3:1 on bg, 5.1:1 on panel */
+  --es-faint: #60655d;       /* captions, metadata: 4.7:1 on panel (lowest allowed) */
+  --es-line: #c8c8c8;        /* hairlines */
+  --es-accent: #ef5b3b;      /* coral: nodes, markers, one primary action at most */
+  --es-accent-ink: #1b0b06;  /* text on coral: 5.7:1 */
+  --es-dark: #262626;        /* dark buttons, panel top edge */
+  --es-dark-ink: #fcfcfc;
+  --es-logo: #002e5d;        /* exact group-logo navy */
+  --es-ok: #2f6b3a;          /* status colours: used with a word or icon, never colour alone */
+  --es-warn: #8a5a00;
+  --es-error: #a3321c;
+
+  --es-grotesk: "Helvetica Neue", Helvetica, "Nimbus Sans", Arial, sans-serif;
+  --es-mono: ui-monospace, "SF Mono", "IBM Plex Mono", Menlo, Consolas, monospace;
+  --es-ease-out: cubic-bezier(.215, .61, .355, 1);
+  --es-ease-soft: cubic-bezier(.22, -.01, .13, .99);
+  --es-maxw: 1320px;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --es-bg: #161616; --es-panel: #232422; --es-panel-2: #1d1e1c; --es-text: #ededeb; --es-muted: #b4b7b1;
+    --es-faint: #9a9e96; --es-line: #3a3b39; --es-accent: #ff7556; --es-dark: #ededeb; --es-dark-ink: #161616;
+    --es-logo: #dfe7f1; --es-ok: #8fd19e; --es-warn: #f0c36b; --es-error: #ffb4a3;
+  }
+}
+:root[data-theme="dark"] {
+  --es-bg: #161616; --es-panel: #232422; --es-panel-2: #1d1e1c; --es-text: #ededeb; --es-muted: #b4b7b1;
+  --es-faint: #9a9e96; --es-line: #3a3b39; --es-accent: #ff7556; --es-dark: #ededeb; --es-dark-ink: #161616;
+  --es-logo: #dfe7f1; --es-ok: #8fd19e; --es-warn: #f0c36b; --es-error: #ffb4a3;
+}
+
+/* ---------- base ---------- */
+.es-app, .es-app * { box-sizing: border-box; }
+.es-app { background: var(--es-bg); color: var(--es-text); font-family: var(--es-grotesk); font-size: 15px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+.es-app :focus-visible { outline: 2px solid var(--es-text); outline-offset: 3px; }
+.es-app a { color: inherit; text-underline-offset: 3px; }
+.es-sr-only { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* type: app scale (the website's marketing scale is larger; see DESIGN.md) */
+.es-h1 { font-weight: 400; font-size: clamp(30px, 3.2vw, 44px); line-height: 1.05; letter-spacing: -0.025em; margin: 0; }
+.es-h2 { font-weight: 400; font-size: 24px; line-height: 1.15; letter-spacing: -0.015em; margin: 0; }
+.es-h3 { font-weight: 500; font-size: 16px; line-height: 1.3; letter-spacing: -0.005em; margin: 0; }
+.es-lede { color: var(--es-muted); max-width: 60ch; }
+.es-caption { font-size: 13px; color: var(--es-faint); }
+.es-num { font-family: var(--es-mono); font-variant-numeric: tabular-nums; }
+
+/* mono uppercase label pill, optional coral "+" */
+.es-label { display: inline-block; padding: 4px 8px; background: var(--es-panel); font-family: var(--es-mono); font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--es-muted); }
+.es-label .es-plus { color: var(--es-accent); margin-right: 6px; }
+.es-panel .es-label { background: var(--es-bg); }
+
+/* ---------- framed top bar ---------- */
+.es-topbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 24px; min-height: 54px; padding: 6px 6px 6px 14px; border: 1px solid var(--es-text); background: var(--es-bg); }
+.es-wordmark { display: inline-flex; align-items: center; gap: 12px; font-size: 20px; font-weight: 500; letter-spacing: -0.02em; color: var(--es-text); text-decoration: none; white-space: nowrap; }
+.es-wordmark small { font-size: 14px; font-weight: 400; color: var(--es-faint); letter-spacing: 0; }
+/* group logo as a stencil (keeps its exact shape, takes --es-logo; readable in dark mode).
+   Set the URL to wherever the app serves emgroup-logo.png. */
+.es-mark { flex: none; width: 36px; height: 36px; background-color: var(--es-logo); -webkit-mask: var(--es-logo-url) center / contain no-repeat; mask: var(--es-logo-url) center / contain no-repeat; }
+.es-nav { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 0; padding: 0; list-style: none; }
+.es-nav a, .es-nav button { font-family: var(--es-mono); font-size: 12.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--es-text); background: none; border: 0; padding: 4px 0; text-decoration: none; cursor: pointer; }
+.es-nav a:hover, .es-nav [aria-current="page"], .es-nav [aria-selected="true"] { text-decoration: underline; text-underline-offset: 5px; }
+.es-topbar .es-end { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+
+/* ---------- buttons: square, mono, uppercase ---------- */
+.es-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 40px; padding: 0 14px; font-family: var(--es-mono); font-size: 12.5px; letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; text-decoration: none; cursor: pointer; border: 1px solid var(--es-text); background: transparent; color: var(--es-text); transition: background-color .15s ease, color .15s ease, border-color .15s ease; }
+.es-btn:hover { background: var(--es-panel); }
+.es-btn:active { transform: translateY(1px); }
+.es-btn:disabled, .es-btn[aria-disabled="true"] { color: var(--es-faint); border-color: var(--es-line); background: transparent; cursor: not-allowed; transform: none; }
+.es-btn--dark { background: var(--es-dark); color: var(--es-dark-ink); border-color: var(--es-dark); }
+.es-btn--dark:hover { background: var(--es-accent); color: var(--es-accent-ink); border-color: var(--es-accent); }
+.es-btn--accent { background: var(--es-accent); color: var(--es-accent-ink); border-color: var(--es-accent); }
+.es-btn--accent:hover { background: color-mix(in srgb, var(--es-accent) 85%, #000); }
+.es-btn--quiet { border-color: var(--es-line); }
+.es-btn--quiet:hover { border-color: var(--es-text); background: transparent; }
+.es-btn--sm { height: 32px; padding: 0 10px; font-size: 12px; }
+
+/* ---------- surfaces ---------- */
+/* grey panel with the dark top edge (sciemo style): main grouping element */
+.es-panel { background: var(--es-panel); border-top: 6px solid var(--es-dark); padding: 20px 22px 24px; }
+.es-panel--quiet { background: var(--es-panel-2); border-top-width: 3px; }
+.es-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding-bottom: 10px; border-bottom: 1px solid var(--es-text); margin-bottom: 16px; }
+.es-rule { border: 0; border-top: 1px solid var(--es-line); margin: 20px 0; }
+/* figures and data images: white mat, hairline, never rounded */
+.es-figure { margin: 0; }
+.es-figure img, .es-figure canvas { display: block; max-width: 100%; border: 1px solid var(--es-line); background: #fff; }
+.es-figure figcaption { margin-top: 8px; font-size: 13px; color: var(--es-faint); }
+
+/* key/value spec list (website "instruments" style) */
+.es-spec { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--es-text); }
+.es-spec li { display: grid; grid-template-columns: 10rem 1fr; gap: 14px; padding: 9px 0; font-size: 14.5px; color: var(--es-muted); }
+.es-spec li + li { border-top: 1px solid var(--es-line); }
+.es-spec dt, .es-spec b { font-family: var(--es-mono); font-weight: 400; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--es-text); padding-top: 2px; }
+
+/* ---------- forms ---------- */
+.es-field { display: grid; gap: 6px; }
+.es-field > label, .es-field > .es-field-label { font-family: var(--es-mono); font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--es-text); }
+.es-input, .es-select, .es-textarea { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px solid var(--es-text); border-radius: 0; background: var(--es-bg); color: var(--es-text); font: inherit; }
+.es-input:focus-visible, .es-select:focus-visible, .es-textarea:focus-visible { outline: 2px solid var(--es-text); outline-offset: 1px; }
+.es-help { font-size: 13px; color: var(--es-faint); }
+.es-check { display: inline-flex; gap: 8px; align-items: center; }
+.es-check input { accent-color: var(--es-text); width: 16px; height: 16px; }
+
+/* ---------- tables ---------- */
+.es-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.es-table th { text-align: left; font-family: var(--es-mono); font-weight: 400; font-size: 11.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--es-muted); padding: 8px 10px; border-bottom: 1px solid var(--es-text); }
+.es-table td { padding: 9px 10px; border-bottom: 1px solid var(--es-line); vertical-align: top; }
+.es-table tr:hover td { background: var(--es-panel-2); }
+.es-table tr[aria-selected="true"] td { background: color-mix(in srgb, var(--es-text) 6%, transparent); }
+.es-table tr[aria-selected="true"] td:first-child { box-shadow: inset 3px 0 0 var(--es-accent); }
+
+/* ---------- tabs ---------- */
+.es-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--es-line); }
+.es-tab { font-family: var(--es-mono); font-size: 12px; letter-spacing: .04em; text-transform: uppercase; padding: 10px 14px; background: none; border: 0; color: var(--es-muted); cursor: pointer; }
+.es-tab[aria-selected="true"] { color: var(--es-text); box-shadow: inset 0 -2px 0 var(--es-accent); }
+
+/* ---------- status, progress, logs ---------- */
+.es-status { display: inline-flex; align-items: center; gap: 8px; font-family: var(--es-mono); font-size: 12px; letter-spacing: .04em; text-transform: uppercase; }
+.es-status::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
+.es-status--ok { color: var(--es-ok); } .es-status--warn { color: var(--es-warn); }
+.es-status--error { color: var(--es-error); }
+.es-status--run { color: var(--es-text); } .es-status--run::before { background: var(--es-accent); }  /* coral text would fail AA; coral dot only */
+.es-status--idle { color: var(--es-faint); } .es-status--idle::before { background: transparent; border: 1.5px solid currentColor; }
+.es-progress { height: 4px; margin: 14px 0; background: color-mix(in srgb, var(--es-text) 12%, transparent); overflow: hidden; }
+.es-progress > span { display: block; height: 100%; background: var(--es-accent); transition: width .3s var(--es-ease-out); }
+.es-alert { border-left: 3px solid var(--es-accent); background: var(--es-panel-2); padding: 10px 14px; font-size: 14px; }
+.es-alert--error { border-left-color: var(--es-error); }
+.es-log { font-family: var(--es-mono); font-size: 12px; line-height: 1.55; background: var(--es-panel-2); color: var(--es-muted); padding: 12px 14px; max-height: 320px; overflow: auto; white-space: pre-wrap; }
+
+/* ---------- nodes joined by dashed lines (pipelines, stages, run timelines) ---------- */
+.es-steps { position: relative; list-style: none; margin: 0; padding: 0; }
+.es-steps::before { content: ""; position: absolute; left: 6px; top: 8px; bottom: 8px; border-left: 1.5px dashed var(--es-faint); }
+.es-steps li { position: relative; padding: 0 0 18px 28px; }
+.es-steps li:last-child { padding-bottom: 0; }
+.es-steps li::before { content: ""; position: absolute; left: 0; top: 4px; width: 13px; height: 13px; border-radius: 50%; background: var(--es-accent); }
+.es-steps li.is-pending::before { background: var(--es-bg); border: 1.5px solid var(--es-accent); box-sizing: border-box; }
+.es-steps li.is-done::before { background: var(--es-text); }
+
+/* ---------- motion ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .es-app *, .es-app *::before, .es-app *::after { transition: none !important; animation: none !important; }
+}
+/* Windows high contrast: keep the stencilled logo and nodes visible */
+@media (forced-colors: active) {
+  .es-mark, .es-steps li::before, .es-status::before { forced-color-adjust: none; background-color: CanvasText; }
+}

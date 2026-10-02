@@ -2,7 +2,7 @@
 // focused file or the batch selection, and can export the equivalent Python call.
 
 import { api } from "./api.js";
-import { callout, clear, copyText, fmt, h, icon, segmented, switchControl, toast } from "./dom.js";
+import { button, callout, checkRow, clear, copyText, fmt, h, segmented, toast } from "./dom.js";
 import { refreshJobs, showRuns } from "./jobstore.js";
 import { state, storage, subscribe, update } from "./state.js";
 
@@ -10,6 +10,9 @@ const root = document.getElementById("convert");
 let settings = null;
 let manualRadius = storage.get("manualRadius", 20);
 let busy = false;
+// Where each target file would write, as the server resolves it (read-only source folders fall
+// back to the output root): { key, byFile: { path: { dir, writable, fallback } } }.
+let targetInfo = { key: null, byFile: {} };
 
 const PRESETS = {
   quick: { do_save: false, parallax: false, aberrations: false, do_recentering: false,
@@ -81,9 +84,23 @@ export function pythonSnippet(files, p, outputDir) {
     `    datacube = azohp_to_py4d(\n        loadupname,\n        ${kwargs.join("\n        ")}\n    )\n`;
 }
 
+function refreshTargets(files) {
+  const key = JSON.stringify([files, settings.backend, settings.output_dir]);
+  if (key === targetInfo.key) return;
+  targetInfo = { key, byFile: {} };
+  Promise.all(files.slice(0, 200).map((f) => api.outputTarget(f, settings.backend, settings.output_dir)
+    .then((t) => [f, t]).catch(() => [f, null])))
+    .then((pairs) => {
+      if (targetInfo.key !== key) return;
+      targetInfo = { key, byFile: Object.fromEntries(pairs.filter(([, t]) => t)) };
+      render();
+    });
+}
+
 function outputPreview(file) {
   const sep = (state.env && state.env.sep) || "/";
-  const base = settings.output_dir || `${fmt.dirname(file)}${sep}${settings.backend === "quantem" ? "ReformattedForQuantem" : "ReformattedForPy4DSTEM"}`;
+  const known = targetInfo.byFile[file];
+  const base = known ? known.dir : settings.output_dir || `${fmt.dirname(file)}${sep}${settings.backend === "quantem" ? "ReformattedForQuantem" : "ReformattedForPy4DSTEM"}`;
   const stem = fmt.basename(file).replace(/\.hp$/i, "");
   return settings.per_run_folder ? `${base}${sep}${stem}_<date-time>` : base;
 }
@@ -112,37 +129,47 @@ async function submit() {
 }
 
 function toggleRow(id, label, checked, onChange, { hint, disabled, issues = [] } = {}) {
-  return h("div", { class: "field" },
-    h("div", { class: "toggle-row" },
-      h("label", { for: id }, label),
-      switchControl(checked, onChange, { id, disabled }),
-      hint && h("div", { class: "hint" }, hint)),
+  return h("div", { class: "pz-field-group" },
+    checkRow(id, label, checked && !disabled, onChange, { hint, disabled }),
     checked && issues.map((c) => callout(c.status, c.title, c.detail)));
 }
 
-function numberField(id, label, value, unit, onCommit, { hint, min = 0, step = "any", extra } = {}) {
-  return h("div", { class: "field" },
-    h("label", { class: "field-label", for: id }, label, extra),
-    h("div", { class: "input-wrap has-unit" },
-      h("input", {
-        id, class: "input mono", type: "number", min: String(min), step, value: String(value), style: { paddingLeft: "10px" },
-        onChange: (e) => {
-          const v = parseFloat(e.target.value);
-          if (Number.isFinite(v) && v > 0) onCommit(v);
-          else { e.target.value = String(value); toast(`${label} must be a positive number`, { kind: "fail" }); }
-        },
-      }),
-      h("span", { class: "input-unit" }, unit)),
-    hint && h("div", { class: "hint" }, hint));
+function unitInput(id, value, unit, onChange, { min = 0, step = "any", ariaLabel, describedBy } = {}) {
+  return h("div", { class: "pz-unit-input" },
+    h("input", {
+      id, class: "es-input es-num", type: "number", min: String(min), step, value: String(value), inputmode: "decimal",
+      "aria-label": ariaLabel, "aria-describedby": describedBy, onChange,
+    }),
+    h("span", { class: "pz-unit", "aria-hidden": "true" }, unit));
+}
+
+function numberField(id, label, value, unit, onCommit, { hint, extra } = {}) {
+  const hintId = hint ? `${id}-help` : null;
+  return h("div", { class: "es-field" },
+    h("label", { for: id }, label, h("span", { class: "es-sr-only" }, ` (${unit})`)),
+    unitInput(id, value, unit, (e) => {
+      const v = parseFloat(e.target.value);
+      if (Number.isFinite(v) && v > 0) onCommit(v);
+      else { e.target.value = String(value); toast(`${label} must be a positive number`, { kind: "fail" }); }
+    }, { describedBy: hintId }),
+    extra,
+    hint && h("span", { class: "es-help", id: hintId }, hint));
+}
+
+function section(title, ...children) {
+  const id = `conv-${title.toLowerCase().replace(/[^a-z]+/g, "-")}`;
+  return h("section", { class: "pz-convert-section", "aria-labelledby": id },
+    h("h3", { class: "pz-subhead", id }, title), children);
 }
 
 function render() {
   if (!settings) {
-    return clear(root, h("div", { class: "convert-body", style: { paddingTop: "16px", display: "grid", gap: "12px" } },
-      [120, 80, 180, 140].map((height) => h("div", { class: "skeleton", style: { height: `${height}px` } }))));
+    return clear(root, h("h2", { class: "es-sr-only", id: "convertTitle" }, "Convert"),
+      h("div", { class: "pz-convert-body", "aria-busy": "true" },
+        [120, 80, 180, 140].map((height) => h("div", { class: "pz-skeleton", style: { height: `${height}px` } }))));
   }
   const focusId = document.activeElement && root.contains(document.activeElement) ? document.activeElement.id : null;
-  const scrollTop = root.querySelector(".convert-body")?.scrollTop || 0;
+  const scrollTop = root.querySelector(".pz-convert-body")?.scrollTop || 0;
 
   const s = settings;
   const parallaxOn = s.parallax || s.aberrations;
@@ -153,79 +180,74 @@ function render() {
   const engine = env?.backends?.[s.backend || "py4dstem"];
   const blocked = engine ? !engine.available : env && !env.converter_ok;
 
-  const head = h("div", { class: "convert-head" },
-    h("div", { class: "convert-title" }, h("h2", null, "Convert"), h("span", { class: "mono faint" }, quantem ? "Quantem · experimental" : "py4DSTEM")),
+  const head = h("div", { class: "pz-convert-head" },
+    h("div", { class: "es-section-head" },
+      h("h2", { class: "es-h2", id: "convertTitle" }, "Convert"),
+      h("span", { class: "es-label" }, quantem ? "Quantem · experimental" : "py4DSTEM")),
     segmented([
       { value: "quick", label: "Quick look", title: "QC figures only, nothing saved" },
       { value: "full", label: "Full pipeline", title: "Figures, parallax, aberration fit and native dataset" },
       { value: "custom", label: "Custom", disabled: true },
-    ], presetOf(s), (name) => PRESETS[name] && set(PRESETS[name]), { block: true, label: "Preset" }));
+    ], presetOf(s), (name) => PRESETS[name] && set(PRESETS[name]), { block: true, label: "Preset", name: "preset" }));
 
-  const body = h("div", { class: "convert-body" },
-    blocked && h("div", { style: { paddingTop: "14px" } }, callout("fail", "Converter unavailable", engine?.error || env.converter_error)),
+  const body = h("div", { class: "pz-convert-body" },
+    blocked && callout("fail", "Converter unavailable", engine?.error || env.converter_error),
 
-    h("section", { class: "section" },
-      h("h3", null, "Processing engine"),
-      h("label", { class: "field-label", for: "opt-backend" }, "Engine"),
-      h("select", { id: "opt-backend", class: "input", onChange: (e) => set({ backend: e.target.value }) },
-        h("option", { value: "py4dstem", selected: !quantem }, "py4DSTEM"),
-        h("option", { value: "quantem", selected: quantem }, "Quantem (experimental)")),
-      quantem && h("div", { class: "hint" }, "Native Zarr export. Different fitting method: compare results on experimental reference data before replacing py4DSTEM.")),
-    h("section", { class: "section" },
-      h("h3", null, "Output"),
+    section("Processing engine",
+      h("div", { class: "es-field" },
+        h("label", { for: "opt-backend" }, "Engine"),
+        h("select", { id: "opt-backend", class: "es-select", "aria-describedby": quantem ? "opt-backend-help" : null,
+          onChange: (e) => set({ backend: e.target.value }) },
+          h("option", { value: "py4dstem", selected: !quantem }, "py4DSTEM"),
+          h("option", { value: "quantem", selected: quantem }, "Quantem (experimental)")),
+        quantem && h("span", { class: "es-help", id: "opt-backend-help" },
+          "Native Zarr export. Different fitting method: compare results on experimental reference data before replacing py4DSTEM."))),
+
+    section("Output",
       toggleRow("opt-save", quantem ? "Save Quantem .zarr.zip" : "Save py4DSTEM .h5", s.do_save, (v) => set({ do_save: v }),
         { hint: "Data cube with embedded Azorus metadata, scan coordinates and parallax results" }),
-      h("div", { class: "field" },
-        h("label", { class: "field-label", for: "opt-outdir" }, "Output folder"),
+      h("div", { class: "es-field" },
+        h("label", { for: "opt-outdir" }, "Output folder"),
         h("input", {
-          id: "opt-outdir", class: "input mono", placeholder: `Next to each file / ${quantem ? "ReformattedForQuantem" : "ReformattedForPy4DSTEM"}`, value: s.output_dir,
+          id: "opt-outdir", class: "es-input es-num", value: s.output_dir, "aria-describedby": "opt-outdir-help",
           onChange: (e) => set({ output_dir: e.target.value.trim() }),
-        })),
+        }),
+        h("span", { class: "es-help", id: "opt-outdir-help" },
+          `Leave empty to write next to each file, in ${quantem ? "ReformattedForQuantem" : "ReformattedForPy4DSTEM"}.`)),
       toggleRow("opt-perrun", "New subfolder for each run", s.per_run_folder, (v) => set({ per_run_folder: v }),
         { hint: "Keeps earlier results instead of overwriting files with the same names" })),
 
-    h("section", { class: "section" },
-      h("h3", null, "Calibration"),
+    section("Calibration",
       numberField("opt-kv", "Beam energy", s.beam_kV, "kV", (v) => set({ beam_kV: v }), {
-        extra: suggestedKV && suggestedKV !== s.beam_kV && h("button", {
-          class: "suggest hint-inline", type: "button", onClick: () => set({ beam_kV: suggestedKV }),
-          title: "Gun high voltage recorded in this file",
-        }, `Use ${suggestedKV} kV from file`),
+        extra: suggestedKV && suggestedKV !== s.beam_kV && button(`Use ${suggestedKV} kV from file`,
+          () => set({ beam_kV: suggestedKV }), { size: "sm", variant: "quiet", title: "Gun high voltage recorded in this file" }),
       }),
       numberField("opt-pix", "Reconstruction pixel size", s.recon_pix_size_pm, "pm", (v) => set({ recon_pix_size_pm: v }),
         { hint: "Sets the reciprocal-space calibration (λ / pixel size across the detector)" }),
-      h("div", { class: "field" },
-        h("div", { class: "field-label" }, "Bright-field disk radius"),
+      h("div", { class: "es-field" },
+        h("span", { class: "es-field-label", id: "opt-radius-label" }, "Bright-field disk radius"),
         segmented([{ value: "auto", label: "Estimate" }, { value: "manual", label: "Set manually" }],
           s.bf_disk_radius == null ? "auto" : "manual",
-          (mode) => set({ bf_disk_radius: mode === "auto" ? null : manualRadius }), { block: true, label: "Radius mode" }),
-        s.bf_disk_radius != null && h("div", { class: "input-wrap has-unit" },
-          h("input", {
-            id: "opt-radius", class: "input mono", type: "number", min: "1", step: "0.5", value: String(s.bf_disk_radius),
-            "aria-label": "Bright-field disk radius in pixels",
-            onChange: (e) => {
-              const v = parseFloat(e.target.value);
-              if (Number.isFinite(v) && v > 0) { manualRadius = v; storage.set("manualRadius", v); set({ bf_disk_radius: v }); }
-            },
-          }),
-          h("span", { class: "input-unit" }, "px")),
-        h("div", { class: "hint" }, s.bf_disk_radius == null
+          (mode) => set({ bf_disk_radius: mode === "auto" ? null : manualRadius }), { block: true, label: "Bright-field disk radius", name: "radius-mode" }),
+        s.bf_disk_radius != null && unitInput("opt-radius", s.bf_disk_radius, "px", (e) => {
+          const v = parseFloat(e.target.value);
+          if (Number.isFinite(v) && v > 0) { manualRadius = v; storage.set("manualRadius", v); set({ bf_disk_radius: v }); }
+        }, { min: 1, step: "0.5", ariaLabel: "Bright-field disk radius in pixels" }),
+        h("span", { class: "es-help" }, s.bf_disk_radius == null
           ? "Estimated from the mean pattern (×1.2 for the virtual detectors)"
           : "Drawn on the diffraction pattern viewer; used for the virtual detectors"))),
 
-    h("section", { class: "section" },
-      h("h3", null, "Preprocessing"),
+    section("Preprocessing",
       toggleRow("opt-recenter", "Recenter diffraction patterns", s.do_recentering, (v) => set({ do_recentering: v }),
         { hint: quantem ? "Bilinear shifts from centre-of-mass estimates; differs from py4DSTEM disk fitting" : "Shift every pattern so the central beam sits at the detector centre" }),
-      s.do_recentering && h("div", { class: "field" },
-        h("div", { class: "field-label" }, "Centre estimate"),
+      s.do_recentering && h("div", { class: "es-field" },
+        h("span", { class: "es-field-label" }, "Centre estimate"),
         segmented([
           { value: "fit", label: "Plane fit per position" },
           { value: "simple", label: "Single global centre" },
-        ], s.centre_method, (v) => set({ centre_method: v }), { block: true, label: "Centre method" }))),
+        ], s.centre_method, (v) => set({ centre_method: v }), { block: true, label: "Centre estimate", name: "centre-method" }))),
 
-    h("section", { class: "section" },
-      h("h3", null, "Parallax"),
+    section("Parallax",
       toggleRow("opt-parallax", "Parallax reconstruction", parallaxOn, (v) => set({ parallax: v }),
         { hint: quantem ? "Cross-correlation alignment and direct parallax reconstruction" : "Align bright-field images across the detector (py4DSTEM Parallax)", issues: compatIssues("parallax") }),
       toggleRow("opt-aberr", "Fit aberrations", s.aberrations, (v) => set({ aberrations: v }),
@@ -235,37 +257,54 @@ function render() {
       quantem && toggleRow("opt-ls", "Fourier-phase refinement (unvalidated)", s.quantem_least_squares, (v) => set({ quantem_least_squares: v }),
         { disabled: !s.aberrations, hint: "Quantem least squares adds Cs and higher orders. Not yet validated: on the synthetic sample it drives defocus to ~0" })),
 
-    h("section", { class: "section" },
-      h("h3", null, "QC figures"),
+    section("QC figures",
       FIGURES.map(([key, label, hint]) => {
         const disabled = key === "plot_parallax_recon" && !parallaxOn;
-        return h("label", { class: `check-row${disabled ? " disabled" : ""}` },
-          h("input", { type: "checkbox", class: "checkbox", checked: s[key] && !disabled, disabled, onChange: (e) => set({ [key]: e.target.checked }) }),
-          h("span", null, label),
-          h("span", { class: "hint" }, disabled ? "Needs parallax reconstruction" : hint));
+        return checkRow(`fig-${key}`, label, s[key] && !disabled, (v) => set({ [key]: v }),
+          { disabled, hint: disabled ? "Needs parallax reconstruction" : hint });
       }),
       s.plot_parallax_recon && parallaxOn && compatIssues("parallax_figure").map((c) => callout(c.status, c.title, c.detail))));
 
+  refreshTargets(files);
+  const known = files.map((f) => targetInfo.byFile[f]).filter(Boolean);
+  const unwritable = known.filter((t) => !t.writable);
+  const fallbacks = known.filter((t) => t.fallback && t.writable);
   const multi = files.length > 1;
-  const foot = h("div", { class: "convert-foot" },
-    h("div", { class: "target-line", title: files.length === 1 ? outputPreview(files[0]) : "" },
-      icon(multi ? "layers" : "folder", "sm"),
-      h("span", { class: files.length === 1 ? "mono" : "" },
+  const foot = h("div", { class: "pz-convert-foot" },
+    unwritable.length > 0 && callout("fail", "Output folder isn't writable",
+      `${unwritable[0].dir}${unwritable.length > 1 ? ` and ${unwritable.length - 1} more` : ""}. Set an output folder you can write to.`),
+    fallbacks.length > 0 && callout("warn", "Source folder is read-only",
+      fallbacks.length === 1 ? `Results will go to ${fallbacks[0].dir}.`
+        : `${fallbacks.length} files are in read-only folders; their results go under ${state.env?.output_root || "the output root"}.`),
+    h("p", { class: "pz-target", title: files.length === 1 ? outputPreview(files[0]) : "" },
+      h("span", { class: "es-field-label" }, "Writes to"),
+      h("span", { class: files.length === 1 ? "es-num pz-path" : "" },
         files.length === 0 ? "Select a .hp file to convert"
           : multi ? `${files.length} files from the batch selection`
-          : `→ ${outputPreview(files[0])}`)),
-    h("div", { class: "foot-actions" },
-      h("button", { class: "btn primary lg", disabled: !files.length || busy || blocked, onClick: submit },
-        busy ? h("span", { class: "spinner", style: { borderColor: "rgba(255,255,255,.3)", borderTopColor: "currentColor" } }) : icon("play"),
-        files.length > 1 ? `Convert ${files.length} files` : "Convert"),
-      h("button", {
-        class: "btn lg", title: "Copy the equivalent Python call", "aria-label": "Copy as Python",
-        disabled: !files.length, onClick: () => copyText(pythonSnippet(files, s), "Python call copied"),
-      }, icon("code"))));
+          : `‎${outputPreview(files[0])}`)),
+    h("div", { class: "pz-actions" },
+      button(busy ? "Queuing…" : files.length > 1 ? `Convert ${files.length} files` : "Convert", submit,
+        { variant: "dark", disabled: !files.length || busy || blocked || unwritable.length > 0 }),
+      button("Copy as Python", () => copyText(pythonSnippet(files, s), "Python call copied"),
+        { disabled: !files.length, title: "Copy the equivalent Python call" })));
 
   clear(root, head, body, foot);
-  root.querySelector(".convert-body").scrollTop = scrollTop;
+  root.querySelector(".pz-convert-body").scrollTop = scrollTop;
   if (focusId) document.getElementById(focusId)?.focus();
+}
+
+// Load a run's parameters into the panel (e.g. to change the output folder of a failed run before
+// running it again) and put the cursor in the output folder field.
+export function loadSettings(params) {
+  const defaults = (state.env && state.env.defaults) || {};
+  settings = { ...defaults };
+  for (const key of Object.keys(defaults)) if (key in params) settings[key] = params[key];
+  storage.set("settings", settings);
+  update({ settings });
+  requestAnimationFrame(() => {
+    const field = document.getElementById("opt-outdir");
+    if (field) { field.scrollIntoView({ block: "center" }); field.focus(); }
+  });
 }
 
 export function initConvert() {

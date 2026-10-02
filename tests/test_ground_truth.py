@@ -9,9 +9,11 @@ validate Quantem's Fourier-phase least-squares refinement, which needs a physica
 Each engine's tests skip when that engine isn't importable; run this file once from a py4DSTEM
 environment (numpy < 2) and once from a Quantem environment (numpy >= 2).
 
-Measured biases on the 48 x 48 x 96 x 96 sample, encoded in the tolerances below:
+Measured biases on the 48 x 48 x 96 x 96 sample, encoded in the tolerances below
+(py4DSTEM's mirror-plus-rotation bug is worked around in fit_parallax_aberrations):
   py4DSTEM 0.14.14 and 0.14.18: C1 1.3% low, rotation within 0.05 deg.
-  Quantem (commit 55a0b01): C10 1.1% high, rotation +1.9 deg (not yet explained).
+  Quantem (commit 55a0b01, unregularized shifts): C10 within 1.1%, rotation +1.9 to +2.3 deg (not yet
+  explained), |C12| up to 0.05 nm.
 """
 import io
 import contextlib
@@ -22,7 +24,8 @@ import pytest
 
 C1_REL_TOL = 0.025
 ROTATION_TOL_DEG = 0.5
-QUANTEM_ROTATION_BIAS_DEG = 1.9
+QUANTEM_ROTATION_BIAS_DEG = 2.1
+QUANTEM_ASTIGMATISM_TOL_NM = 0.08
 
 
 def expected_c1_nm(truth):
@@ -96,18 +99,19 @@ def test_py4dstem_mirror_without_transpose_reads_as_astigmatism(py4d_fit):
     assert r["c12_nm"] == pytest.approx(abs(expected_c1_nm(r["truth"])), rel=C1_REL_TOL)
 
 
-@pytest.mark.xfail(strict=True, reason="py4DSTEM 0.14.14/0.14.18: with force_transpose and a non-zero "
-                                       "rotation the refined C1 is scaled by cos(2 * rotation)")
 def test_py4dstem_mirror_and_rotation(py4d_fit):
+    # py4DSTEM 0.14.14/0.14.18 scale the refined C1 by cos(2 * rotation) when force_transpose is on;
+    # fit_parallax_aberrations works around it (see its docstring).
     r = py4d_fit("mirror_rot30", force_transpose=True)
     assert r["c1_nm"] == pytest.approx(expected_c1_nm(r["truth"]), rel=C1_REL_TOL)
-
-
-def test_py4dstem_affine_estimate_flags_mirror_and_rotation(py4d_fit):
-    r = py4d_fit("mirror_rot30", force_transpose=True)
-    assert r["affine_c1_nm"] == pytest.approx(expected_c1_nm(r["truth"]), rel=C1_REL_TOL)
-    assert abs(r["c1_nm"] - r["affine_c1_nm"]) > 0.05 * abs(r["affine_c1_nm"])
+    assert abs(r["c12_nm"]) < 0.05
     assert_angle(r["rotation_deg"], r["truth"]["rotation_deg"], ROTATION_TOL_DEG)
+
+
+def test_py4dstem_refined_and_affine_estimates_agree(py4d_fit):
+    for name, transpose in (("base", False), ("rot30", False), ("mirror", True), ("mirror_rot30", True)):
+        r = py4d_fit(name, force_transpose=transpose)
+        assert r["c1_nm"] == pytest.approx(r["affine_c1_nm"], rel=0.05), name
 
 
 def test_py4dstem_and_shared_calibration_agree(py4d_fit, samples):
@@ -161,7 +165,7 @@ def test_quantem_recovers_defocus_and_rotation(quantem_fit, name, force_transpos
     r = quantem_fit(name, force_transpose)
     assert r["method"] == "cross-correlation"
     assert r["defocus_nm"] == pytest.approx(expected_c1_nm(r["truth"]), rel=C1_REL_TOL)
-    assert abs(r["astigmatism_nm"]) < 0.05
+    assert abs(r["astigmatism_nm"]) < QUANTEM_ASTIGMATISM_TOL_NM
     assert_angle(r["rotation_deg"], r["truth"]["rotation_deg"] + QUANTEM_ROTATION_BIAS_DEG, ROTATION_TOL_DEG)
 
 

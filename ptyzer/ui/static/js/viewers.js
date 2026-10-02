@@ -29,6 +29,8 @@ function lut(name) {
   return (LUTS[name] = table);
 }
 
+let viewerId = 0;
+
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
@@ -66,18 +68,18 @@ export class ScanView {
     this.showPoints = storage.get("scanPoints", true);
     this.base = document.createElement("canvas");
 
-    this.canvas = h("canvas", { "aria-label": "Scan positions over the overview image. Click to pick a position." });
-    this.status = h("div", { class: "state" }, "Loading scan coordinates…");
-    this.chipPos = h("div", { class: "overlay-chip bl", hidden: true });
-    this.chipIdx = h("div", { class: "overlay-chip tr", hidden: true });
-    this.well = h("div", { class: "well square" }, this.canvas, this.status, this.chipPos, this.chipIdx);
-    this.toolbar = h("div", { class: "viewer-toolbar" });
-    this.el = h("div", null, this.toolbar, this.well,
-      h("div", { class: "viewer-foot" },
-        h("div", { class: "legend" },
-          h("span", null, h("i", { class: "swatch", style: { background: "var(--accent)" } }), "Scan positions"),
-          h("span", null, h("i", { class: "swatch", style: { background: "var(--beam)" } }), "First 10 (scan start)"),
-          h("span", null, h("i", { class: "swatch", style: { border: "1.5px dashed var(--accent)" } }), "Mesh region"))));
+    this.canvas = h("canvas", { role: "img", "aria-label": "Scan positions over the overview image. Click a position to show its diffraction pattern." });
+    this.status = h("div", { class: "pz-viewer-state" }, "Loading scan coordinates…");
+    this.chipPos = h("div", { class: "pz-chip pz-chip--bl", hidden: true });
+    this.chipIdx = h("div", { class: "pz-chip pz-chip--tr", hidden: true });
+    this.well = h("div", { class: "pz-well" }, this.canvas, this.status, this.chipPos, this.chipIdx);
+    this.toolbar = h("div", { class: "pz-toolbar" });
+    this.el = h("div", { class: "pz-viewer" }, this.toolbar, this.well,
+      h("div", { class: "pz-viewer-foot" },
+        h("ul", { class: "pz-legend", "aria-label": "Legend" },
+          h("li", null, h("i", { class: "pz-legend-mark pz-legend-mark--positions", "aria-hidden": "true" }), "Scan positions"),
+          h("li", null, h("i", { class: "pz-legend-mark pz-legend-mark--start", "aria-hidden": "true" }), "First 10 (scan start)"),
+          h("li", null, h("i", { class: "pz-legend-mark pz-legend-mark--mesh", "aria-hidden": "true" }), "Mesh region"))));
     this.renderToolbar();
 
     this.canvas.addEventListener("mousemove", (e) => this.onMove(e));
@@ -118,12 +120,12 @@ export class ScanView {
         { value: "region", label: "Scan region" },
         { value: "full", label: "Full overview", disabled: !canFull },
       ], this.mode, (mode) => { this.mode = mode; storage.set("scanMode", mode); this.renderToolbar(); this.redrawBase(); },
-      { label: "Field of view" }),
-      h("label", { class: "check-row", style: { gridTemplateColumns: "16px auto", alignItems: "center" } },
-        h("input", { type: "checkbox", class: "checkbox", checked: this.showPoints,
+      { label: "Field of view", name: `fov-${++viewerId}` }),
+      h("label", { class: "es-check" },
+        h("input", { type: "checkbox", checked: this.showPoints,
           onChange: (e) => { this.showPoints = e.target.checked; storage.set("scanPoints", this.showPoints); this.redrawBase(); } }),
         h("span", null, "Positions")),
-      h("span", { class: "faint", style: { marginLeft: "auto", fontSize: "12px" } },
+      h("span", { class: "es-caption es-num pz-push" },
         this.g.n_coords ? `${fmt.int(this.g.n_coords)} positions` : ""));
   }
 
@@ -168,8 +170,9 @@ export class ScanView {
     this.win = this.window();
     const ctx = this.base.getContext("2d");
     const g = this.g;
-    const accent = cssVar("--accent") || "#4db3ff";
-    const beam = cssVar("--beam") || "#ff7847";
+    // Overlays sit on the (dark) micrograph: coral positions and mesh, white scan-start markers.
+    const accent = cssVar("--es-accent") || "#ef5b3b";
+    const beam = "#ffffff";
 
     ctx.fillStyle = "#060709";
     ctx.fillRect(0, 0, W, H);
@@ -370,6 +373,9 @@ export class ScanView {
     const shown = this.hover && this.hover.index != null ? this.hover.index : this.selected;
     this.chipIdx.hidden = shown == null;
     if (shown != null) this.chipIdx.textContent = this.describe(shown);
+    if (this.selected != null) {
+      this.canvas.setAttribute("aria-label", `Scan positions over the overview image; selected ${this.describe(this.selected)}. Click a position to show its diffraction pattern.`);
+    }
     this.chipPos.hidden = !(this.hover && nmPerV);
     if (this.hover && nmPerV) {
       this.chipPos.textContent = `x ${(nmPerV * this.hover.colV).toFixed(3)} nm · y ${(-nmPerV * this.hover.rowV).toFixed(3)} nm`;
@@ -393,18 +399,19 @@ export class FrameView {
     this.stats = null;
     this.controller = null;
 
-    this.canvas = h("canvas", { "aria-label": "Diffraction pattern" });
-    this.status = h("div", { class: "state" }, "Loading…");
-    this.chipInfo = h("div", { class: "overlay-chip tl" });
-    this.chipStats = h("div", { class: "overlay-chip bl", hidden: true });
+    this.canvas = h("canvas", { role: "img", "aria-label": "Diffraction pattern" });
+    this.status = h("div", { class: "pz-viewer-state" }, "Loading…");
+    this.chipInfo = h("div", { class: "pz-chip pz-chip--tl", "aria-hidden": "true" });
+    this.chipStats = h("div", { class: "pz-chip pz-chip--bl", hidden: true, "aria-hidden": "true" });
     this.well = h("div", {
-      class: "well square", tabindex: "0",
-      title: "Arrow keys step through scan positions",
+      class: "pz-well", tabindex: "0", role: "group",
+      "aria-label": "Diffraction pattern viewer. Arrow keys step through scan positions.",
       onKeydown: (e) => this.onKey(e),
     }, this.canvas, this.status, this.chipInfo, this.chipStats);
-    this.toolbar = h("div", { class: "viewer-toolbar" });
-    this.foot = h("div", { class: "viewer-foot" });
-    this.el = h("div", null, this.toolbar, this.well, this.foot);
+    this.toolbar = h("div", { class: "pz-toolbar" });
+    this.foot = h("div", { class: "pz-viewer-foot" });
+    this.el = h("div", { class: "pz-viewer" }, this.toolbar, this.well, this.foot);
+    this.id = ++viewerId;
 
     this.resizeObserver = new ResizeObserver(() => { sizeCanvas(this.canvas); this.draw(); });
     this.resizeObserver.observe(this.canvas);
@@ -445,7 +452,7 @@ export class FrameView {
     const [rows, cols] = this.grid;
     const row = Math.floor(this.index / cols), col = this.index % cols;
     const numberInput = (value, max, label, apply) => h("input", {
-      class: "input mono", type: "number", min: "0", max: String(max), value: String(value), "aria-label": label,
+      class: "es-input es-num", type: "number", min: "0", max: String(max), value: String(value), "aria-label": label,
       disabled: this.source !== "position",
       onChange: (e) => { const v = parseInt(e.target.value, 10); if (Number.isFinite(v)) apply(v); },
     });
@@ -454,22 +461,24 @@ export class FrameView {
       segmented([
         { value: "position", label: "At position" },
         { value: "mean", label: "Sampled mean", title: "Mean of up to 256 evenly spaced patterns" },
-      ], this.source, (source) => { this.source = source; this.renderControls(); this.load(); }, { label: "Pattern source" }),
+      ], this.source, (source) => { this.source = source; this.renderControls(); this.load(); }, { label: "Pattern source", name: `src-${this.id}` }),
       segmented([
         { value: "log", label: "Log" },
         { value: "linear", label: "Linear" },
       ], this.scale, (scale) => { this.scale = scale; storage.set("frameScale", scale); this.renderControls(); this.load(); },
-      { label: "Intensity scale" }),
-      h("select", {
-        class: "select", "aria-label": "Colormap", style: { marginLeft: "auto" },
-        onChange: (e) => { this.cmap = e.target.value; storage.set("frameCmap", this.cmap); this.recolor(); },
-      }, ["inferno", "viridis", "gray"].map((name) =>
-        h("option", { value: name, selected: name === this.cmap ? "selected" : null }, name[0].toUpperCase() + name.slice(1)))));
+      { label: "Intensity scale", name: `scale-${this.id}` }),
+      h("label", { class: "pz-inline-field pz-push" },
+        h("span", { class: "es-field-label" }, "Colormap"),
+        h("select", {
+          class: "es-select",
+          onChange: (e) => { this.cmap = e.target.value; storage.set("frameCmap", this.cmap); this.recolor(); },
+        }, ["inferno", "viridis", "gray"].map((name) =>
+          h("option", { value: name, selected: name === this.cmap ? "selected" : null }, name[0].toUpperCase() + name.slice(1))))));
 
     this.foot.replaceChildren(
-      h("span", { class: "stepper-input" }, "Row", numberInput(row, rows - 1, "Scan row", (v) => this.onStep(Math.max(0, Math.min(rows - 1, v)) * cols + col))),
-      h("span", { class: "stepper-input" }, "Col", numberInput(col, cols - 1, "Scan column", (v) => this.onStep(row * cols + Math.max(0, Math.min(cols - 1, v))))),
-      h("span", { class: "faint", style: { marginLeft: "auto" } },
+      h("label", { class: "pz-inline-field" }, h("span", { class: "es-field-label", "aria-hidden": "true" }, "Row"), numberInput(row, rows - 1, "Scan row", (v) => this.onStep(Math.max(0, Math.min(rows - 1, v)) * cols + col))),
+      h("label", { class: "pz-inline-field" }, h("span", { class: "es-field-label", "aria-hidden": "true" }, "Col"), numberInput(col, cols - 1, "Scan column", (v) => this.onStep(row * cols + Math.max(0, Math.min(cols - 1, v))))),
+      h("span", { class: "es-caption es-num pz-push" },
         this.g.dp_shape ? `${this.g.dp_shape[1]} × ${this.g.dp_shape[2]} px · arrow keys step` : ""));
   }
 
@@ -560,8 +569,9 @@ export class FrameView {
       ? `Mean of ${this.stats ? this.stats.frames : "…"} patterns`
       : `row ${Math.floor(this.index / cols)} · col ${this.index % cols} · #${this.index}`;
     this.chipStats.hidden = !this.stats;
-    if (this.stats) {
-      this.chipStats.textContent = `min ${fmt.sig(this.stats.min, 3)} · max ${fmt.sig(this.stats.max, 3)} · mean ${fmt.sig(this.stats.mean, 3)}`;
-    }
+    const statsText = this.stats ? `min ${fmt.sig(this.stats.min, 3)} · max ${fmt.sig(this.stats.max, 3)} · mean ${fmt.sig(this.stats.mean, 3)}` : "";
+    if (this.stats) this.chipStats.textContent = statsText;
+    // Text equivalent of the canvas: what is shown and its intensity statistics.
+    this.canvas.setAttribute("aria-label", `Diffraction pattern, ${this.scale} scale, ${this.cmap} colormap: ${this.chipInfo.textContent}${statsText ? `; ${statsText}` : ""}`);
   }
 }

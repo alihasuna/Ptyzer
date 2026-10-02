@@ -45,6 +45,10 @@ def converter():
         if _converter is None and _converter_error is None:
             os.environ.setdefault("MPLBACKEND", "Agg")
             try:
+                # azohp_to_py4d defers its py4DSTEM import (so its figure helpers work without it), but
+                # converting needs py4DSTEM: require it here so a Quantem-only environment reports
+                # py4DSTEM as unavailable.
+                importlib.import_module("py4DSTEM")
                 _converter = importlib.import_module("ptyzer.io.azohp_to_py4d")
             except Exception as exc:  # reported through environment()
                 _converter_error = f"{type(exc).__name__}: {exc}"
@@ -246,13 +250,18 @@ def raster_check(x, y):
     return ("ok", "Scan raster orientation as expected", "x increases along columns, y decreases down rows")
 
 
-def existing_outputs(hp_path):
-    """Outputs of earlier conversions in the default output folder (and its per-run subfolders)."""
+def existing_outputs(hp_path, output_root=None):
+    """Outputs of earlier conversions in the default output folders (next to the file, and the
+    fallback under output_root used when that folder is read-only) and their per-run subfolders."""
     stem = os.path.splitext(os.path.basename(hp_path))[0]
+    source_dir = os.path.dirname(os.path.abspath(hp_path))
+    bases = [source_dir]
+    if output_root:
+        bases.append(os.path.join(os.path.abspath(os.path.expanduser(output_root)), os.path.basename(source_dir) or "root"))
     found = []
-    for root, suffix, engine in ((OUTPUT_DIRNAME, "_py4.h5", "py4dstem"),
-                                 ("ReformattedForQuantem", "_quantem.zarr.zip", "quantem")):
-        out_root = os.path.join(os.path.dirname(hp_path), root)
+    for base, (root, suffix, engine) in ((b, r) for b in bases for r in (
+            (OUTPUT_DIRNAME, "_py4.h5", "py4dstem"), ("ReformattedForQuantem", "_quantem.zarr.zip", "quantem"))):
+        out_root = os.path.join(base, root)
         if not os.path.isdir(out_root):
             continue
         candidates = [out_root]
@@ -284,14 +293,14 @@ def is_output_figure(path):
             and re.search(r"_(%s)\.png$" % "|".join(FIGURE_KINDS), name) is not None)
 
 
-def inspect_hp(path):
+def inspect_hp(path, output_root=None):
     from . import azorus as conv
     st = os.stat(path)
     checks = []
     result = {
         "path": path, "name": os.path.basename(path), "size": st.st_size, "mtime": st.st_mtime,
         "checks": checks, "datasets": [], "summary": [], "metadata": {}, "geometry": None,
-        "suggested": {}, "outputs": existing_outputs(path),
+        "suggested": {}, "outputs": existing_outputs(path, output_root),
     }
 
     with h5py.File(path, "r") as f:
@@ -369,7 +378,7 @@ def inspect_hp(path):
                     _check(checks, "frames", "ok", "Frames match the scan mesh",
                            f"{dp.shape[0]:,} frames = {grid_shape[0]}×{grid_shape[1]}")
                 if dp.shape[1] != dp.shape[2]:
-                    _check(checks, "square", "warn", "Diffraction patterns aren't square",
+                    _check(checks, "square", "fail", "Diffraction patterns aren't square",
                            f"{dp.shape[1]}×{dp.shape[2]}; the calibration assumes square patterns.")
                 nbytes = int(np.prod(dp.shape)) * dp.dtype.itemsize
                 ram = total_memory_bytes()

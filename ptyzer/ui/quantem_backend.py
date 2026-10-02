@@ -2,6 +2,8 @@
 
 Native output is a Quantem Dataset4dstem Zarr archive. Fitting and interpolation
 are different from py4DSTEM; validate scientific results on experimental data.
+QC figures follow azohp_to_py4d's layout: its own coordinate check and overview figures,
+and Quantem versions of its virtual-image and parallax summary figures (quantem_figures.py).
 """
 import sys
 import time
@@ -22,6 +24,8 @@ def run_quantem(file, output_dir=None, params=None, emit_event=None):
     from quantem.core.datastructures import Dataset4dstem
     from quantem.diffractive_imaging import DirectPtychography
     from quantem.diffractive_imaging.origin_models import CenterOfMassOriginModel
+    from ptyzer.io import azohp_to_py4d as conv  # its figure helpers need no py4DSTEM
+    from . import quantem_figures as qfig
 
     p = normalize_params(params)
     emit = emit_event or (lambda *args, **kwargs: None)
@@ -33,7 +37,9 @@ def run_quantem(file, output_dir=None, params=None, emit_event=None):
     emit('stage', key='read_meta')
     with h5py.File(file, 'r') as source:
         attrs, _ = unpack_diffraction_meta_all(source, 'attrs')
-        unpack_diffraction_meta_all(source)  # Validate acquisition metadata before loading the stack.
+        dp_meta, _ = unpack_diffraction_meta_all(source)  # Validate acquisition metadata before loading the stack.
+        nm_per_v = float(attrs['scanCalibration']) / 1e-9
+        conv.print_diffraction_acquisition_summary(dp_meta, attrs, nm_per_v)
         # Keep the raw blobs too: unknown typed fields can be recovered without loss.
         raw_meta = {key: source[key][()].decode('utf-8') for key in ('attrs', 'diffraction/meta')}
         coords = source['coords'][()]
@@ -57,26 +63,19 @@ def run_quantem(file, output_dir=None, params=None, emit_event=None):
                   output_file=None, output_format='.zarr.zip',
                   method_note='Experimental Quantem backend. Cross-correlation fit validated on the synthetic ground truth only; validate against experimental reference data.')
 
-    def save_figure(kind, fig):
-        fig.suptitle(f'{stem} · Quantem {quantem.__version__}')
-        fig.tight_layout()
-        path = str((folder / f'{stem}_{kind}.png').absolute())
-        fig.savefig(path, dpi=120)
-        plt.close(fig)
-        emit('figure', kind=kind, label=FIGURE_LABELS[kind], path=path)
+    def fig_path(kind):
+        return str((folder / f'{stem}_{kind}.png').absolute())
 
-    def figure(kind, images, titles, cmap='gray'):
-        fig, axes = plt.subplots(1, len(images), figsize=(5*len(images), 4), squeeze=False)
-        for ax, img, title in zip(axes[0], images, titles):
-            im = ax.imshow(img, cmap=cmap)
-            ax.set_title(title)
-            fig.colorbar(im, ax=ax, shrink=.7)
-        save_figure(kind, fig)
+    def done(kind):
+        plt.close('all')
+        emit('figure', kind=kind, label=FIGURE_LABELS[kind], path=fig_path(kind))
 
     if p['plot_coord_checks']:
         emit('stage', key='coord_checks')
-        figure('coord_checks', [coords.reshape(*shape, 2)[..., 0], coords.reshape(*shape, 2)[..., 1], x, y],
-               ['Raw row voltage (V)', 'Raw column voltage (V)', 'Scan x (nm)', 'Scan y (nm)'], 'coolwarm')
+        scan_coords = {'x': nm_per_v * coords[:, 1], 'y': -nm_per_v * coords[:, 0]}
+        reshaped = {k: v.reshape(shape, order='C') for k, v in scan_coords.items()}
+        conv.plot_scan_coordinate_check_figure(coords, scan_coords, reshaped, shape, file, save_path=fig_path('coord_checks'))
+        done('coord_checks')
     if p['do_recentering']:
         emit('stage', key='recenter')
         origin = CenterOfMassOriginModel.from_dataset(dataset, device='cpu')
@@ -88,27 +87,14 @@ def run_quantem(file, output_dir=None, params=None, emit_event=None):
         del origin
     if p['plot_overview']:
         emit('stage', key='overview_fig')
-        nm_per_v = float(attrs['scanCalibration']) / 1e-9
-        top, left, height, width = attrs['_overview_extent']
-        fig, ax = plt.subplots(figsize=(6,5))
-        ax.imshow(overview, cmap='gray', extent=(left*nm_per_v, (left+width)*nm_per_v,
-                   (top+height)*nm_per_v, top*nm_per_v))
-        mesh_y, mesh_x, mesh_h, mesh_w = attrs['meshParams']['extent']
-        ax.add_patch(plt.Rectangle((mesh_x*nm_per_v, mesh_y*nm_per_v), mesh_w*nm_per_v,
-                     mesh_h*nm_per_v, edgecolor='red', facecolor='none', label='Scan mesh'))
-        ax.set(xlabel='x (nm)', ylabel='y (nm)', title='Overview & scan mesh')
-        ax.legend()
-        save_figure('overview', fig)
+        conv.plot_overview_image(overview, attrs, nm_per_v, file, save_path=fig_path('overview'))
+        done('overview')
     if p['plot_virtual_diff']:
         emit('stage', key='virtual_fig')
         mean = dataset.array.mean(axis=(0,1))
-        mask = mean > mean.max()*.5
-        radius = p['bf_disk_radius'] or float(np.sqrt(mask.sum()/np.pi)*1.2)
-        centre = tuple(v/2 for v in mean.shape)
-        bf = dataset.get_virtual_image(mode='circle', geometry=(centre, radius), name='BF', show=False).array
-        adf = dataset.get_virtual_image(mode='annular', geometry=(centre, (radius, 2000)), name='ADF', show=False).array
-        figure('virtual_diff', [bf, adf, np.log1p(mean), np.log1p(dataset.array.max(axis=(0,1)))],
-               ['Virtual BF', 'Virtual ADF', 'Log mean diffraction', 'Log max diffraction'])
+        radius = p['bf_disk_radius'] or float(np.sqrt((mean > mean.max()*.5).sum()/np.pi)*1.2)
+        qfig.plot_virtual_images(dataset.array, file, radius, fig_path('virtual_diff'))
+        done('virtual_diff')
     if p['parallax'] or p['aberrations']:
         emit('stage', key='parallax_preprocess')
         # Corner shifting is an internal Quantem representation change. Optional persisted
@@ -128,9 +114,12 @@ def run_quantem(file, output_dir=None, params=None, emit_event=None):
         emit('stage', key='parallax_reconstruct')
         # Cross-correlation shift fit (rotation, C10, C12). This is the step validated against the
         # ground-truth sample (tests/test_ground_truth.py), and the one comparable to py4DSTEM's
-        # shift-based aberration_fit.
-        direct.fit_hyperparameters_cross_correlation(bin_factors=(4,2,1), dft_upsample_factor=4,
-                 deconvolution_kernel='parallax', parallax_flip_phase=False, max_batch_size=64)
+        # shift-based aberration_fit. Shifts are not regularized to the aberration model, as in the
+        # converter's py4DSTEM call, so the parallax summary shows what was actually measured.
+        with qfig.capture_shift_fit() as shift_fits:
+            direct.fit_hyperparameters_cross_correlation(bin_factors=(4,2,1), dft_upsample_factor=4, regularize_shifts=False,
+                     deconvolution_kernel='parallax', parallax_flip_phase=False, max_batch_size=64)
+        aligned_bf = direct.corrected_bf.detach().cpu().numpy().copy()
         rotation = float(direct.hyperparameter_state.current_rotation_angle())
         if p['aberrations'] and p['quantem_least_squares']:
             # Fourier-phase least-squares refinement. Not validated: the synthetic sample has no
@@ -156,9 +145,15 @@ def run_quantem(file, output_dir=None, params=None, emit_event=None):
             result['aberrations'] = dict(defocus_nm=coefs.get('C10', 0)/10, astigmatism_nm=coefs.get('C12', 0)/10,
                  cs_mm=coefs['C30']/1e7 if 'C30' in coefs else None, rotation_deg=rotation, transpose=p['force_transpose'],
                  method='least squares (unvalidated)' if p['quantem_least_squares'] else 'cross-correlation')
-        if p['plot_parallax_recon']:
+        if p['plot_parallax_recon'] and shift_fits:
             emit('stage', key='parallax_fig')
-            figure('parallax_recon', [recon], ['Aligned BF (4× sampling; phase flip off)'])
+            fit_params = {'defocus C10 [Å]': coefs.get('C10', 0.0), 'astigmatism |C12| [Å]': coefs.get('C12', 0.0),
+                          'rotation_degrees': rotation, 'approximate_beam_half_angle_mrad': semiangle,
+                          'recon_pixel_size_pm': p['recon_pix_size_pm'], 'diffraction_angular_FOV_mrad': fov,
+                          'transpose': int(p['force_transpose']), 'method': 'Quantem cross-correlation'}
+            qfig.plot_parallax_summary(shift_fits[-1], file, aligned_bf, recon, fit_params,
+                                       fig_path('parallax_recon'), rotation_deg=rotation)
+            done('parallax_recon')
     if p['do_save']:
         emit('stage', key='save')
         path = str((folder / f'{stem}_quantem.zarr.zip').absolute())

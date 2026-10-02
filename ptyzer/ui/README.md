@@ -20,6 +20,8 @@ This opens `http://127.0.0.1:8765/` in your browser. Useful options:
 | `--port N` | `8765` | `0` picks a free port |
 | `--no-browser` | off | Don't open a browser tab |
 | `--host ADDR` | `127.0.0.1` | Binding to anything else exposes your files to the network |
+| `--output-root PATH` | `~/ptyzer-output` | Where results go when the folder next to a `.hp` file is read-only; also `PTYZER_OUTPUT_ROOT` |
+| `--unix-socket PATH` | off | Listen on a Unix socket instead of a port (see *Behind JupyterHub*) |
 
 No packages beyond what the converter itself needs (py4DSTEM, h5py, numpy, matplotlib) are required. The server uses only the Python standard library, and the frontend is plain HTML/CSS/JS with no build step or CDN, so it also works on offline instrument PCs.
 
@@ -118,6 +120,86 @@ Only single frames or small samples are read, never the whole stack.
 **Convert (right panel).** Each control maps onto one `azohp_to_py4d` argument. *Quick look* produces QC figures only; *Full pipeline* matches the example in `azohp_to_py4d.py`'s `__main__` block. **New subfolder for each run** (on by default) writes each run to `ReformattedForPy4DSTEM/<name>_<date-time>/`, so re-running with different settings doesn't overwrite earlier results. The `</>` button copies the equivalent Python call.
 
 **Runs.** Conversions run one at a time. Each shows its pipeline stages with timings, the QC figures as they're written, the fitted defocus / Cs / rotation and data-cube calibration, the native dataset path, and the full log, including py4DSTEM's progress bars. Runs can be cancelled, re-run, or opened in Finder/Explorer. Failures show the exception, a hint for known problems, and the traceback.
+
+## Read-only data
+
+Results normally go to `ReformattedForPy4DSTEM/` (or `ReformattedForQuantem/`) next to the `.hp`
+file. When that folder can't be written (for example a read-only sshfs mount of project data), they
+go to `<output root>/<source folder name>/ReformattedFor…/` instead, with the output root from
+`--output-root` or `PTYZER_OUTPUT_ROOT` (default `~/ptyzer-output`). The Convert panel says so before
+you queue ("Source folder is read-only; results will go to …"), refuses an output folder you've set
+that can't be written, and Inspect lists earlier conversions from both places. A failed run offers
+*Edit and run again*, which loads its settings into Convert so you can change the output folder
+first. The file browser shows a *Fir data* shortcut when `~/fir` exists.
+
+## What a run writes
+
+Runs started from the UI (its worker) go through the same steps around the conversion, whichever
+engine. Calling `azohp_to_py4d` or `run_quantem` directly, including the code from *Copy as Python*,
+runs the conversion only: no gate, run record or raw-metadata group.
+
+- **Pre-flight gate.** The Inspect checks run first. Missing datasets, undecodable metadata, a frame
+  or coordinate count that doesn't match the mesh, non-square patterns or non-finite coordinates stop
+  the run. A scan-orientation problem is a warning for py4DSTEM (the coordinate check figure exists to
+  diagnose it) and stops Quantem, which only supports the expected raster.
+- **QC figures in one layout.** Quantem runs use the converter's own coordinate check and overview
+  figures (its py4DSTEM imports are deferred, so these work without py4DSTEM), and Quantem versions of
+  its virtual-image and parallax summary figures. The summary is built from the bright-field shifts
+  Quantem measured, captured from outside, with the affine-fit residual in place of py4DSTEM's
+  convergence curve.
+- **Run record.** `<name>_ptyzer.json` next to the outputs: engine and versions, the input path,
+  size and a fingerprint (sha256 of the metadata JSON, scan coordinates and stack shape), parameters,
+  pre-flight results, calibration, fitted values with their sign and rotation conventions, warnings,
+  and the output files.
+- **Lossless py4DSTEM files.** After `py4DSTEM.save`, the raw Azorus `attrs` and `diffraction/meta`
+  JSON (byte for byte) and the raw scan voltages go into a root-level `/ptyzer_azorus_raw` group;
+  `py4DSTEM.read` still loads the file as before.
+
+## Behind JupyterHub
+
+The UI can be opened through [jupyter-server-proxy](https://jupyter-server-proxy.readthedocs.io/)
+under `/user/<name>/ptyzer/`. Every URL in the page is relative, and the server can listen on a Unix
+socket (created owner-only, mode 0600) instead of a TCP port, which on a shared server any logged-in
+user could reach:
+
+```bash
+python -m ptyzer.ui --unix-socket /path/to/ptyzer.sock --dir /path/to/data
+```
+
+A matching `jupyter_server_config.py` entry (check the option names against your installed
+jupyter-server-proxy version):
+
+```python
+c.ServerProxy.servers = {
+    "ptyzer": {
+        "command": ["python", "-m", "ptyzer.ui", "--unix-socket", "{unix_socket}"],
+        "environment": {"PTYZER_OUTPUT_ROOT": "/path/to/writable/ptyzer-output"},
+        "unix_socket": True,
+        "timeout": 60,
+        "launcher_entry": {"title": "Ptyzer"},
+    },
+}
+```
+
+On a socket the loopback `Host` check is off (the proxy forwards the hub's host); POSTs must still
+be JSON, and their `Origin` must match `X-Forwarded-Host` (or `Host`). Open the URL with its
+trailing slash; the page adds it if missing.
+
+## Look and accessibility
+
+The UI uses the ElectroSim design system shared with the group website and JupyterHub:
+`static/electrosim-ui.css` is the kit, copied unchanged from `electrosim-hub/brand/` (update it by
+copying a new version over it); `static/styles.css` holds only the app layout, on the kit's
+`--es-*` tokens. Light and dark follow the system, and the theme button stores the choice under the
+shared `localStorage` key `es-theme`. QC figures, micrographs and diffraction patterns keep their
+scientific colour maps on white mats.
+
+Accessibility target is WCAG 2.1 AA: landmarks and a skip link, labelled controls, a visible focus
+ring, keyboard access throughout (arrow keys step the diffraction viewer; Escape closes dialogs),
+status as a word as well as a colour, polite live regions for run progress, text equivalents for
+the canvas viewers, no looping animation, `prefers-reduced-motion` honoured, and a single-column
+layout down to 320 px. Lighthouse accessibility scores 100 on the empty, Inspect and Runs screens
+in light and dark (2026-10-02).
 
 ## How it works
 

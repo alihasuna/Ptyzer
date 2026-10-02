@@ -2,55 +2,62 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Ptyzer</title>
-  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/styles.css">
   <script>
-    try { const t = localStorage.getItem("ptyzer.theme"); if (t) document.documentElement.dataset.theme = JSON.parse(t); } catch (e) {}
+    // Relative URLs need the trailing slash (e.g. /user/<name>/ptyzer -> /user/<name>/ptyzer/).
+    if (!location.pathname.endsWith("/")) location.replace(location.pathname + "/" + location.search + location.hash);
   </script>
-  <script type="module" src="/static/js/main.js"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Ptyzer: inspect Azorus .hp 4D-STEM datasets and convert them with py4DSTEM or Quantem.">
+  <title>Ptyzer · ElectroSim</title>
+  <!-- Relative URLs throughout: the app is also served under /user/<name>/<app>/ by jupyter-server-proxy. -->
+  <link rel="icon" href="static/favicon-64.png" type="image/png">
+  <link rel="stylesheet" href="static/electrosim-ui.css">
+  <link rel="stylesheet" href="static/styles.css">
+  <script>
+    // Shared with the ElectroSim website and JupyterHub (same origin): "light" or "dark".
+    try { const t = localStorage.getItem("es-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
+  </script>
+  <script type="module" src="static/js/main.js"></script>
 </head>
-<body>
-  <div class="app" id="app">
-    <header class="topbar">
-      <button class="icon-btn only-narrow" id="drawerToggle" aria-label="Show files"></button>
-      <a class="brand" href="#inspect" aria-label="Ptyzer home">
-        <svg class="brand-mark" viewBox="0 0 28 28" aria-hidden="true">
-          <rect x="1" y="1" width="26" height="26" rx="7" fill="var(--accent)"/>
-          <g fill="var(--on-accent)">
-            <circle cx="8" cy="8" r="1.5" opacity=".55"/><circle cx="14" cy="8" r="1.5" opacity=".55"/><circle cx="20" cy="8" r="1.5" opacity=".55"/>
-            <circle cx="8" cy="14" r="1.5" opacity=".55"/><circle cx="14" cy="14" r="2.1"/><circle cx="20" cy="14" r="1.5" opacity=".55"/>
-            <circle cx="8" cy="20" r="1.5" opacity=".55"/><circle cx="14" cy="20" r="1.5" opacity=".55"/><circle cx="20" cy="20" r="1.5" opacity=".55"/>
-          </g>
-          <circle cx="14" cy="14" r="4.6" fill="none" stroke="var(--on-accent)" stroke-width="1.4"/>
-        </svg>
-        <span class="brand-name">Ptyzer</span>
-        <span class="brand-sub">Azorus .hp · 4D-STEM</span>
-      </a>
-      <nav class="tabs" role="tablist" aria-label="Views">
-        <button class="tab" role="tab" data-view="inspect" aria-selected="true">Inspect</button>
-        <button class="tab" role="tab" data-view="runs" aria-selected="false">Runs <span class="count" id="runsCount" hidden></span></button>
-      </nav>
-      <div class="topbar-right">
-        <button class="env-pill" id="envPill" aria-haspopup="dialog" aria-expanded="false">
-          <span class="dot pulse"></span><span class="env-text">Checking environment…</span>
-        </button>
-        <button class="icon-btn" id="themeToggle" aria-label="Toggle light or dark theme"></button>
-      </div>
-    </header>
-    <aside class="sidebar" id="sidebar" aria-label="File browser"></aside>
-    <div class="drawer-scrim" id="drawerScrim"></div>
-    <main class="main">
-      <section class="view view-inspect" id="viewInspect">
-        <div class="inspect-scroll" id="inspect"></div>
-        <aside class="convert" id="convert" aria-label="Conversion settings"></aside>
-      </section>
-      <section class="view view-runs" id="viewRuns" hidden></section>
-    </main>
+<body class="es-app">
+  <a class="pz-skip" href="#main">Skip to main content</a>
+  <div class="pz-app" id="app">
+    <div class="pz-frame">
+      <header class="es-topbar pz-topbar">
+        <button class="es-btn es-btn--quiet es-btn--sm pz-only-narrow" id="drawerToggle" type="button"
+                aria-controls="sidebar" aria-expanded="false">Files</button>
+        <a class="es-wordmark" href="#inspect"><span class="es-mark" role="img" aria-label="Electron Microscopy Research Group logo"></span><span class="pz-wm-name">electrosim</span> <small>Ptyzer</small></a>
+        <nav aria-label="Main">
+          <ul class="es-nav">
+            <li><a href="#inspect" data-view="inspect" aria-current="page">Inspect</a></li>
+            <li><a href="#runs" data-view="runs">Runs<span class="pz-count" id="runsCount" hidden></span></a></li>
+          </ul>
+        </nav>
+        <div class="es-end">
+          <button class="es-btn es-btn--quiet es-btn--sm pz-env" id="envPill" type="button"
+                  aria-haspopup="dialog" aria-expanded="false" aria-controls="envPopover">
+            <span class="es-sr-only">Python environment:</span>
+            <span class="es-status es-status--idle" id="envStatus">Checking</span><span class="pz-env-text" id="envText"></span>
+          </button>
+          <button class="es-btn es-btn--quiet es-btn--sm" id="themeToggle" type="button">
+            <span class="pz-swatch" aria-hidden="true"></span><span class="pz-theme-text">Theme</span>
+          </button>
+        </div>
+      </header>
+    </div>
+    <div class="pz-body">
+      <aside class="pz-sidebar" id="sidebar" aria-label="Files"></aside>
+      <main class="pz-main" id="main" tabindex="-1">
+        <div class="pz-view pz-view-inspect" id="viewInspect">
+          <div class="pz-inspect" id="inspect"></div>
+          <section class="pz-convert" id="convert" aria-labelledby="convertTitle"></section>
+        </div>
+        <div class="pz-view pz-view-runs" id="viewRuns" hidden></div>
+      </main>
+    </div>
   </div>
-  <div class="popover" id="envPopover" role="dialog" aria-label="Environment" hidden></div>
-  <div class="lightbox" id="lightbox" role="dialog" aria-label="Figure viewer" hidden></div>
-  <div class="toasts" id="toasts" aria-live="polite"></div>
+  <div class="pz-popover" id="envPopover" role="dialog" aria-label="Python environment" hidden></div>
+  <div class="pz-lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="Figure viewer" hidden></div>
+  <div class="pz-toasts" id="toasts" role="status" aria-live="polite"></div>
 </body>
 </html>

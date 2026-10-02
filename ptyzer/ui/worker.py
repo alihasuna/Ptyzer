@@ -34,7 +34,7 @@ FIGURE_LABELS = {
 def build_plan(p):
     """The ordered pipeline stages azohp_to_py4d will go through for these params."""
     if p.get("backend") == "quantem":
-        stages = [("read_meta", "Read file & metadata"), ("load_data", "Load & calibrate Quantem dataset")]
+        stages = [("preflight", "Check input"), ("read_meta", "Read file & metadata"), ("load_data", "Load & calibrate Quantem dataset")]
         for param, key, label in (
             ("plot_coord_checks", "coord_checks", "Scan-coordinate check figure"),
             ("do_recentering", "recenter", "Recenter diffraction patterns"),
@@ -50,8 +50,9 @@ def build_plan(p):
             stages.append(("parallax_subpixel", "Quantem · reconstruct at 4× sampling"))
             if p["plot_parallax_recon"]: stages.append(("parallax_fig", "Parallax summary figure"))
         if p["do_save"]: stages.append(("save", "Write Quantem .zarr.zip"))
+        stages.append(("record", "Write run record"))
         return [{"key": key, "label": label} for key, label in stages]
-    stages = [("read_meta", "Read file & metadata")]
+    stages = [("preflight", "Check input"), ("read_meta", "Read file & metadata")]
     if p["plot_coord_checks"]:
         stages.append(("coord_checks", "Scan-coordinate check figure"))
     stages.append(("load_data", "Load & calibrate diffraction stack"))
@@ -70,7 +71,8 @@ def build_plan(p):
         if p["plot_parallax_recon"]:
             stages.append(("parallax_fig", "Parallax summary figure"))
     if p["do_save"]:
-        stages.append(("save", "Write py4DSTEM .h5"))
+        stages.append(("save", "Write py4DSTEM .h5 (+ raw Azorus metadata)"))
+    stages.append(("record", "Write run record"))
     return [{"key": key, "label": label} for key, label in stages]
 
 
@@ -107,7 +109,12 @@ def _json_default(value):
     return str(value)
 
 
+_figures = []  # figure events of this run, for the run record
+
+
 def emit(event, **data):
+    if event == "figure":
+        _figures.append({"kind": data.get("kind"), "path": data.get("path")})
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.flush()
@@ -123,6 +130,8 @@ def explain(exc, text):
     """A short, actionable hint for failures we know how to recognise."""
     if "only 0-dimensional arrays can be converted" in text:
         return "py4DSTEM's Parallax code is incompatible with numpy 2. Install numpy<2."
+    if type(exc).__name__ == "PreflightError":
+        return "The file failed the pre-flight checks the Inspect view shows; fix the file or its metadata first."
     if isinstance(exc, MemoryError):
         return "Ran out of memory: the converter loads the full diffraction stack into RAM."
     if "cannot reshape array" in text:
@@ -252,8 +261,8 @@ def summarize(datacube, conv, p, captured):
                 if abs(defocus - affine) > 0.05 * max(abs(affine), 10.0):
                     result["aberrations_warning"] = (
                         f"Refined defocus ({defocus / 10:.3f} nm) disagrees with py4DSTEM's initial affine "
-                        f"estimate ({affine / 10:.3f} nm). With transpose on and a non-zero rotation the refined "
-                        "value is known to be scaled by cos(2 × rotation); compare with the Quantem engine.")
+                        f"estimate ({affine / 10:.3f} nm). Check the mirror setting and compare with the Quantem "
+                        "engine before using this value.")
             if "approximate_beam_half_angle_mrad" in extra:
                 aberrations["beam_half_angle_mrad"] = float(extra["approximate_beam_half_angle_mrad"])
             result["aberrations"] = aberrations
@@ -267,30 +276,45 @@ def main():
     p = job["params"]
     started = time.time()
     emit("plan", stages=build_plan(p))
-    emit("stage", key="read_meta")
+    emit("stage", key="preflight")
 
     os.environ["MPLBACKEND"] = "Agg"
     warnings.filterwarnings("ignore", message=".*non-interactive.*cannot be shown")
     try:
+        from . import records
+        file, backend = job["file"], p.get("backend") or "py4dstem"
+        checks, warns = records.preflight(file, backend)
+        for w in warns:
+            print(f"Pre-flight warning: {w['title']}. {w.get('detail') or ''}".strip(), flush=True)
+        emit("stage", key="read_meta")
+
         import matplotlib
         matplotlib.use("Agg")
-        if p.get("backend") == "quantem":
+        if backend == "quantem":
             from .quantem_backend import run_quantem
-            result = run_quantem(job["file"], job["output_dir"], p, emit_event=emit)
-            result["elapsed_s"] = time.time() - started
-            emit("result", **result)
-            return
-        import py4DSTEM
-        from ptyzer.io import azohp_to_py4d as conv
+            import quantem
+            engine = {"name": "Quantem", "version": quantem.__version__}
+            result = run_quantem(file, job["output_dir"], p, emit_event=emit)
+        else:
+            import py4DSTEM
+            from ptyzer.io import azohp_to_py4d as conv
 
-        captured = {}
-        install_hooks(conv, py4DSTEM, p, captured)
-        emit("info", engine="py4DSTEM", version=getattr(py4DSTEM, "__version__", None),
-             py4DSTEM=getattr(py4DSTEM, "__version__", None),
-             python=sys.version.split()[0], executable=sys.executable)
+            captured = {}
+            install_hooks(conv, py4DSTEM, p, captured)
+            engine = {"name": "py4DSTEM", "version": getattr(py4DSTEM, "__version__", None)}
+            emit("info", engine="py4DSTEM", version=engine["version"], py4DSTEM=engine["version"],
+                 python=sys.version.split()[0], executable=sys.executable)
 
-        datacube = conv.azohp_to_py4d(**converter_kwargs(job["file"], job["output_dir"], p))
-        result = summarize(datacube, conv, p, captured)
+            datacube = conv.azohp_to_py4d(**converter_kwargs(file, job["output_dir"], p))
+            result = summarize(datacube, conv, p, captured)
+            if result.get("output_file"):
+                records.append_azorus_raw(result["output_file"], file)
+
+        emit("stage", key="record")
+        result["preflight_warnings"] = [w["title"] for w in warns]
+        result["record_file"] = records.write_record(
+            job["output_dir"], os.path.splitext(os.path.basename(file))[0], file=file, params=p, engine=engine,
+            result=result, checks=checks, warnings=warns, figures=list(_figures), started=started)
         result["elapsed_s"] = time.time() - started
         emit("result", **result)
     except Exception as exc:
