@@ -3,7 +3,7 @@
 import { api } from "./api.js";
 import { initBrowser } from "./browser.js";
 import { initConvert } from "./convert.js";
-import { button, callout, clear, copyText, h, pathText } from "./dom.js";
+import { button, callout, clear, copyText, h, pathText, status } from "./dom.js";
 import { initInspect } from "./inspect.js";
 import { refreshJobs } from "./jobstore.js";
 import { initRuns } from "./runs.js";
@@ -88,15 +88,20 @@ function renderEnv(err) {
   const textEl = document.getElementById("envText");
   const pop = document.getElementById("envPopover");
   const env = state.env;
+  // The status follows the engine selected in Convert; each engine has its own Python environment.
+  const backend = state.settings?.backend || "py4dstem";
   let kind = "idle", word = "Checking", text = "";
   if (err) { kind = "error"; word = "Offline"; text = "Server unreachable"; }
-  else if (env) {
+  else if (env && backend === "quantem") {
+    const q = env.backends?.quantem;
+    if (q?.available) { kind = "ok"; word = "Ready"; text = `Quantem ${q.version}`; }
+    else { kind = "error"; word = "Unavailable"; text = "Quantem"; }
+  } else if (env) {
     const fails = env.checks.filter((c) => c.status === "fail").length;
     const warns = env.checks.filter((c) => c.status === "warn").length;
     const versions = `py4DSTEM ${env.packages.py4DSTEM || "missing"}`;
     if (!env.converter_ok) {
-      const q = env.backends?.quantem?.available;
-      kind = q ? "warn" : "error"; word = q ? "Partial" : "Error"; text = q ? "Quantem only" : "Converter unavailable";
+      kind = "error"; word = "Unavailable"; text = "py4DSTEM";
     } else if (fails || warns) {
       kind = fails ? "error" : "warn"; word = `${fails + warns} issue${fails + warns === 1 ? "" : "s"}`; text = versions;
     } else { kind = "ok"; word = "Ready"; text = versions; }
@@ -109,9 +114,18 @@ function renderEnv(err) {
     return clear(pop, err ? callout("fail", "Can't reach the Ptyzer server", err.message) : h("p", { class: "es-caption" }, "Loading…"));
   }
   const q = env.backends?.quantem;
+  const p4 = env.backends?.py4dstem;
+  const engineRow = (key, name, info, detail) => h("li", null,
+    h("b", null, name, key === backend ? " · selected" : ""),
+    h("span", null, status(info?.available ? "ok" : "error", info?.available ? "Available" : "Unavailable"),
+      h("span", { class: "es-num" }, " ", detail)));
   clear(pop,
-    h("div", { class: "es-section-head" }, h("h2", { class: "es-h3" }, "Python environment"),
+    h("div", { class: "es-section-head" }, h("h2", { class: "es-h3" }, "Engines"),
       button("Close", () => setPopover(false), { size: "sm", variant: "quiet" })),
+    h("ul", { class: "es-spec pz-spec" },
+      engineRow("py4dstem", "py4DSTEM", p4, p4?.available ? p4.version : (p4?.error || "not installed")),
+      engineRow("quantem", "Quantem", q, q?.available ? `${q.version} · numpy ${q.numpy} · experimental` : (q?.error || "not installed"))),
+    h("h3", { class: "pz-subhead" }, "Server Python (runs py4DSTEM)"),
     h("div", { class: "pz-path-row" },
       h("span", { class: "es-label" }, `Python ${env.python}`),
       pathText(env.executable),
@@ -122,10 +136,7 @@ function renderEnv(err) {
     env.checks.map((c) => callout(c.status, c.title, c.detail)),
     env.converter_ok && !env.checks.length && callout("info", "All compatibility checks passed",
       "The py4DSTEM code paths Ptyzer relies on (Parallax, aberration fitting, figure hooks) match what it expects."),
-    q && h("p", { class: "es-help" }, q.available
-      ? `Quantem ${q.version} · numpy ${q.numpy} · experimental`
-      : `Quantem unavailable: ${q.error || "not installed"}`),
-    h("p", { class: "es-help" }, "Each engine runs in a separate worker using its configured Python environment."));
+    h("p", { class: "es-help" }, "Each engine runs in a separate worker using its configured Python environment; the status button follows the engine selected in Convert."));
 }
 
 function setPopover(open) {
@@ -135,6 +146,10 @@ function setPopover(open) {
   pill.setAttribute("aria-expanded", String(open));
   if (open) pop.querySelector("button")?.focus();
   else if (pop.contains(document.activeElement)) pill.focus();
+}
+
+function initEnvStatus() {
+  subscribe((keys) => { if (keys.includes("settings")) renderEnv(); });
 }
 
 function initEnvPopover() {
@@ -162,6 +177,7 @@ initTheme();
 initNav();
 initDrawer();
 initEnvPopover();
+initEnvStatus();
 initConvert();
 initRuns();
 
