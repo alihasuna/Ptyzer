@@ -475,8 +475,21 @@ def make_handler(app):
     return Handler
 
 
+# listen() backlog. socketserver's default of 5 overflows when the browser loads the page's ~12 JS
+# modules at once: blocking clients just wait, but jupyter-server-proxy connects non-blocking and
+# gets EAGAIN, which it reports as a 500 (OSError Errno 22). Set on the class: listen() runs in
+# the constructor.
+REQUEST_QUEUE_SIZE = 128
+
+
+class ThreadingTCPHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    request_queue_size = REQUEST_QUEUE_SIZE
+
+
 class ThreadingUnixHTTPServer(socketserver.ThreadingUnixStreamServer):
     daemon_threads = True
+    request_queue_size = REQUEST_QUEUE_SIZE
 
     def server_bind(self):
         # Only this user may connect: a TCP port on a shared server is reachable by everyone.
@@ -503,6 +516,5 @@ def serve(host="127.0.0.1", port=8765, start_dir=None, verbose=False, quantem_py
     loopback_only = host in LOOPBACK_NAMES
     app = App(start_dir or os.getcwd(), loopback_only=loopback_only, verbose=verbose, quantem_python=quantem_python,
               output_root=output_root)
-    httpd = ThreadingHTTPServer((host, port), make_handler(app))
-    httpd.daemon_threads = True
+    httpd = ThreadingTCPHTTPServer((host, port), make_handler(app))
     return httpd, app
